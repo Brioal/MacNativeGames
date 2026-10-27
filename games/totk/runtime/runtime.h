@@ -45,6 +45,22 @@ int runtime_front_text_input(const RuntimeTextRequest *req, char *out, size_t ou
 void runtime_front_text_test(const char *op, const char *text);   /* diagnostics: "type" text, "enter", "esc" into the open bar */
 int runtime_core_away(void);          /* runtime/threads.c: a guest thread gives its virtual core up around a long host wait */
 void runtime_core_back(int *away);
+typedef struct {
+ uint8_t uuid[10];
+ uint8_t uid_length;
+ char name[41];
+ uint16_t game_character_id;
+ uint8_t character_variant, figure_type;
+ uint16_t model_number;
+ uint8_t series;
+ uint16_t write_counter, version;
+ uint16_t first_write_year;
+ uint8_t first_write_month, first_write_day;
+ uint16_t last_write_year;
+ uint8_t last_write_month, last_write_day;
+} RuntimeVirtualAmiibo;
+void runtime_nfp_set_virtual_amiibo(const RuntimeVirtualAmiibo *amiibo);
+void runtime_nfp_request_scan(void);
 void runtime_spin_wait(unsigned module, uint64_t head);   // threads.c: a pass of a gated spin wait (loader.c runtime_dispatch)
 void runtime_save_probe(void);
 int runtime_fs_save_busy(void);   /* runtime/fs_host.c: the game is writing save data (window close waits) */
@@ -54,6 +70,7 @@ uint64_t runtime_module_lock_permission(uint64_t address,uint64_t size,unsigned 
 int runtime_module_query(uint64_t address,uint64_t *base,uint64_t *size,unsigned *state,unsigned *permission,unsigned *attribute);
 void runtime_oe_push_message(uint32_t message);
 void hle_bind_system_event(void *event, int autoclear);
+void hle_signal_system_event(void *event);
 uint64_t runtime_svc(unsigned num, uint64_t *regs, const char *module, uint64_t offset);
 void runtime_gate(void);
 void runtime_thread_init(void);

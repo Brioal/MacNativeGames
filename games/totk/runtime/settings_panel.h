@@ -209,9 +209,12 @@ enum { SETTINGS_W = 520, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 5
  NSArray<TOTKSettingRow *> *rows=settings_rows();
  /* The rows close up (down to 26 pt, 2 pt apart) when the panel would not fit the window (21:9 or 32:9 on a laptop
     screen), so its title, close button and first rows stay in view. */
- CGFloat n=rows.count,rowH=SETTINGS_ROW_H,gap=SETTINGS_GAP,room=window?window.contentView.bounds.size.height-8:CGFLOAT_MAX;
- if(n&&SETTINGS_TOP+n*(rowH+gap)-gap+SETTINGS_BOTTOM>room){gap=2;rowH=fmax(26,floor((room-SETTINGS_TOP-SETTINGS_BOTTOM+gap)/n-gap));}
- CGFloat h=SETTINGS_TOP+n*(rowH+gap)-gap+SETTINGS_BOTTOM;
+ CGFloat n=rows.count,rowH=SETTINGS_ROW_H,gap=SETTINGS_GAP,room=window?window.contentView.bounds.size.height-8:CGFLOAT_MAX,bottom=SETTINGS_BOTTOM;
+#ifdef GAME_BOTW160
+ bottom=124;  /* room for the BotW-only Amiibo entry above the existing footer buttons */
+#endif
+ if(n&&SETTINGS_TOP+n*(rowH+gap)-gap+bottom>room){gap=2;rowH=fmax(26,floor((room-SETTINGS_TOP-bottom+gap)/n-gap));}
+ CGFloat h=SETTINGS_TOP+n*(rowH+gap)-gap+bottom;
  if(!(self=[super initWithFrame:NSMakeRect(0,0,SETTINGS_W,h)]))return nil;
  self.rows=rows;self.appearance=[NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
  self.wantsLayer=YES;self.layer.backgroundColor=[NSColor colorWithCalibratedRed:0.10 green:0.16 blue:0.20 alpha:0.9].CGColor;
@@ -221,6 +224,10 @@ enum { SETTINGS_W = 520, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 5
  title.textColor=NSColor.whiteColor;title.frame=NSMakeRect(18,h-38,300,24);[self addSubview:title];
  NSButton *close=[NSButton buttonWithTitle:@"✕" target:self action:@selector(close:)];close.bordered=NO;close.refusesFirstResponder=YES;
  close.font=[NSFont systemFontOfSize:15 weight:NSFontWeightBold];close.contentTintColor=NSColor.whiteColor;close.frame=NSMakeRect(SETTINGS_W-40,h-40,28,28);[self addSubview:close];
+#ifdef GAME_BOTW160
+ NSButton *amiibo=[NSButton buttonWithTitle:settings_text("虚拟 Amiibo","Virtual Amiibo") target:self action:@selector(openAmiibo:)];
+ amiibo.frame=NSMakeRect(14,76,SETTINGS_W-28,30);amiibo.refusesFirstResponder=YES;[self addSubview:amiibo];
+#endif
  for(NSUInteger i=0;i<rows.count;i++){
   TOTKSettingRow *r=rows[i];CGFloat y=h-SETTINGS_TOP-(i+1)*rowH-i*gap,rw=SETTINGS_W-28;
   NSView *band=[[NSView alloc] initWithFrame:NSMakeRect(14,y,rw,rowH)];band.wantsLayer=YES;
@@ -246,6 +253,9 @@ enum { SETTINGS_W = 520, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 5
 }
 -(void)refresh{for(TOTKSettingRow *r in self.rows)[r refresh];}
 -(void)close:(id)sender{(void)sender;settings_show(0);}
+#ifdef GAME_BOTW160
+-(void)openAmiibo:(id)sender{(void)sender;settings_show(0);amiibo_panel_show(1);}
+#endif
 /* The shaders and pipelines this game met that the shared list lacks (totk_shader_contrib.h): sent with gh off the main
    thread, the issue then opened; without gh (or when it fails) the GitHub form opens and Finder shows the file to drag in. */
 -(void)contribute:(NSButton *)button{

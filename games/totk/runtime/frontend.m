@@ -5,6 +5,8 @@
 #import <CoreVideo/CoreVideo.h>
 #include <stdatomic.h>
 #include <math.h>
+#include <stdio.h>
+#include <string.h>
 #include "runtime.h"
 #include "game_version.h"
 #include "totk_ui_lang.h"
@@ -21,6 +23,10 @@ static NSView *hudBox;   /* the FPS / shader / load box (TOTKHudBox), nil with T
 /* The settings panel (key 1, settings_panel.h): while it is open the game gets no keyboard or mouse input. */
 static int settingsOpen;
 static void settings_show(int open);
+#ifdef GAME_BOTW160
+static int amiiboPanelOpen;
+static void amiibo_panel_show(int open);
+#endif
 /* Mouse mode (the settings panel, runtime/gamepad.m): while it is on and the window has the keyboard, the window holds the
    pointer -- moved to the window's centre, detached from the mouse and hidden -- and sends the mouse's buttons and
    movement to gamepad.m. It lets go when the window loses the keyboard (Command-Tab, a click elsewhere), during text
@@ -117,11 +123,22 @@ static CVReturn vsync_callback(CVDisplayLinkRef link,const CVTimeStamp *now,cons
 @end
 @implementation TOTKInputView
 -(BOOL)acceptsFirstResponder{return YES;}
-/* While the settings panel is open only key 1 (it closes the panel, runtime/input.c) and Esc (closes it here, not the game's
-   menu) do anything; releases still go through so nothing stays held. */
--(void)keyDown:(NSEvent *)e{if(settingsOpen&&e.keyCode!=18){if(e.keyCode==53)settings_show(0);return;}runtime_input_key(e.keyCode,1);}
--(void)keyUp:(NSEvent *)e{runtime_input_key(e.keyCode,0);}
+/* The native panels take keyboard input away from the game; held game keys are cleared when a panel opens. */
+-(void)keyDown:(NSEvent *)e{
+#ifdef GAME_BOTW160
+ if(!settingsOpen&&e.keyCode==0&&(e.modifierFlags&NSEventModifierFlagOption)){amiibo_panel_show(!amiiboPanelOpen);return;}
+ if(amiiboPanelOpen){if(e.keyCode==53)amiibo_panel_show(0);return;}
+#endif
+ if(settingsOpen&&e.keyCode!=18){if(e.keyCode==53)settings_show(0);return;}runtime_input_key(e.keyCode,1);}
+-(void)keyUp:(NSEvent *)e{
+#ifdef GAME_BOTW160
+ if(amiiboPanelOpen)return;
+#endif
+ runtime_input_key(e.keyCode,0);}
 -(void)flagsChanged:(NSEvent *)e{int shift=!!(e.modifierFlags&NSEventModifierFlagShift),option=!!(e.modifierFlags&NSEventModifierFlagOption);
+#ifdef GAME_BOTW160
+ if(amiiboPanelOpen)return;
+#endif
  if(e.keyCode==56&&(!settingsOpen||!shift))runtime_input_key(56,shift);if(e.keyCode==58&&(!settingsOpen||!option))runtime_input_key(58,option);}
 /* The game has no mouse controls. In native full screen, keep the pointer out of the picture while idle, but show it again
    as soon as it moves; restore it when the window loses focus or leaves full screen. */
@@ -159,7 +176,11 @@ static CVReturn vsync_callback(CVDisplayLinkRef link,const CVTimeStamp *now,cons
 }
 @end
 static void front_mouse_update(void){   /* main thread; also runtime/gamepad.m's hook when mouse mode changes */
- BOOL want=window&&runtime_mouse_enabled()&&window.isKeyWindow&&!textEntryOpen&&!settingsOpen;
+ BOOL want=window&&runtime_mouse_enabled()&&window.isKeyWindow&&!textEntryOpen&&!settingsOpen
+#ifdef GAME_BOTW160
+  &&!amiiboPanelOpen
+#endif
+  ;
  if(want==mouseHeld)return;
  mouseHeld=want;
  if(want){
@@ -313,13 +334,273 @@ static void note_occlusion(const char *when){int v=(window.occlusionState&NSWind
 static TOTKWindowDelegate *windowDelegate;
 int runtime_front_window_visible(void){return atomic_load(&windowVisible);}
 void runtime_front_request_close(void){dispatch_async(dispatch_get_main_queue(), ^{[window performClose:nil];});}
+/* The 1.6.0 host can provide Emuiibo metadata or a raw Amiibo dump and trigger NFP detection in-game. */
+#ifdef GAME_BOTW160
+static BOOL front_amiibo_read_uint(id value, uint64_t max, uint64_t *out) {
+ if(![value isKindOfClass:NSNumber.class])return NO;
+ double number=[value doubleValue];
+ if(!isfinite(number)||number<0||number>(double)max||floor(number)!=number)return NO;
+ *out=(uint64_t)number;return YES;
+}
+static BOOL front_amiibo_read_date(id value,uint16_t *year,uint8_t *month,uint8_t *day) {
+ if(![value isKindOfClass:NSDictionary.class])return NO;
+ NSDictionary *date=value;uint64_t y,m,d;
+ if(!front_amiibo_read_uint(date[@"y"],UINT16_MAX,&y)||!front_amiibo_read_uint(date[@"m"],12,&m)||m<1||
+    !front_amiibo_read_uint(date[@"d"],31,&d)||d<1)return NO;
+ *year=(uint16_t)y;*month=(uint8_t)m;*day=(uint8_t)d;return YES;
+}
+@class BOTWAmiiboMenuTarget, BOTWAmiiboPanel;
+static BOTWAmiiboMenuTarget *amiiboMenuTarget;
+static BOTWAmiiboPanel *amiiboPanel;
+static NSString *amiiboCurrentID;
+static NSURL *amiiboCurrentURL;
+@interface BOTWAmiiboPanel:NSView
+@property(strong) NSScrollView *listScrollView;
+@property(strong) NSView *fileList;
+@property(strong) NSTextField *folderLabel;
+@property(copy) NSArray<NSURL *> *files;
+-(void)refreshFiles;
+-(void)center;
+@end
+static NSString *front_amiibo_today_key(void) {
+ NSCalendar *calendar=[NSCalendar calendarWithIdentifier:NSCalendarIdentifierGregorian];
+ calendar.timeZone=NSTimeZone.localTimeZone;
+ NSDateComponents *date=[calendar components:NSCalendarUnitYear|NSCalendarUnitMonth|NSCalendarUnitDay fromDate:[NSDate date]];
+ return [NSString stringWithFormat:@"%04ld-%02ld-%02ld",(long)date.year,(long)date.month,(long)date.day];
+}
+static NSString *front_amiibo_identifier(const RuntimeVirtualAmiibo *amiibo) {
+ NSMutableString *identifier=[NSMutableString string];
+ for(NSUInteger i=0;i<amiibo->uid_length;i++)[identifier appendFormat:@"%02x",amiibo->uuid[i]];
+ return identifier;
+}
+static NSString *front_amiibo_identifier_for_url(NSURL *url) {
+ NSError *error=nil;NSData *data=[NSData dataWithContentsOfURL:url options:NSDataReadingMappedIfSafe error:&error];
+ if(!data){fprintf(stderr,"[botw] cannot read Amiibo file for usage count: %s\n",error.localizedDescription.UTF8String);return nil;}
+ RuntimeVirtualAmiibo amiibo={0};
+ if([[url.pathExtension lowercaseString] isEqualToString:@"json"]){
+  id parsed=[NSJSONSerialization JSONObjectWithData:data options:0 error:&error];
+  NSArray *uuid=[parsed isKindOfClass:NSDictionary.class]&&[parsed[@"uuid"] isKindOfClass:NSArray.class]?parsed[@"uuid"]:nil;
+  if(uuid.count!=10)return nil;
+  uint64_t value=0;
+  for(NSUInteger i=0;i<7;i++)if(!front_amiibo_read_uint(uuid[i],UINT8_MAX,&value))return nil;else amiibo.uuid[i]=(uint8_t)value;
+ }else{
+  if(data.length<7)return nil;
+  memcpy(amiibo.uuid,data.bytes,7);
+ }
+ amiibo.uid_length=7;
+ return front_amiibo_identifier(&amiibo);
+}
+static NSString *front_amiibo_usage_prefix(NSString *identifier) { return [@"BOTWAmiiboUsage." stringByAppendingString:identifier]; }
+static NSInteger front_amiibo_today_count(NSString *identifier) {
+ NSUserDefaults *defaults=NSUserDefaults.standardUserDefaults;NSString *prefix=front_amiibo_usage_prefix(identifier);
+ return [[defaults stringForKey:[prefix stringByAppendingString:@".date"]] isEqualToString:front_amiibo_today_key()]
+  ?[defaults integerForKey:[prefix stringByAppendingString:@".today"]]:0;
+}
+static NSInteger front_amiibo_total_count(NSString *identifier) {
+ return [NSUserDefaults.standardUserDefaults integerForKey:[front_amiibo_usage_prefix(identifier) stringByAppendingString:@".total"]];
+}
+static NSArray<NSURL *> *front_amiibo_files(NSString *folder,NSError **error) {
+ NSArray<NSURL *> *urls=[NSFileManager.defaultManager contentsOfDirectoryAtURL:[NSURL fileURLWithPath:folder isDirectory:YES] includingPropertiesForKeys:nil options:NSDirectoryEnumerationSkipsHiddenFiles error:error];
+ if(!urls)return nil;
+ return [urls sortedArrayUsingComparator:^NSComparisonResult(NSURL *a,NSURL *b){return [a.lastPathComponent localizedStandardCompare:b.lastPathComponent];}];
+}
+static void front_amiibo_record_scan(void) {
+ NSUserDefaults *defaults=NSUserDefaults.standardUserDefaults;NSString *prefix=front_amiibo_usage_prefix(amiiboCurrentID);
+ NSString *date=front_amiibo_today_key();NSInteger today=front_amiibo_today_count(amiiboCurrentID)+1;
+ NSInteger total=front_amiibo_total_count(amiiboCurrentID)+1;
+ [defaults setObject:date forKey:[prefix stringByAppendingString:@".date"]];
+ [defaults setInteger:today forKey:[prefix stringByAppendingString:@".today"]];
+ [defaults setInteger:total forKey:[prefix stringByAppendingString:@".total"]];
+ [amiiboPanel refreshFiles];
+}
+@interface BOTWAmiiboMenuTarget:NSObject
+-(void)chooseAmiibo:(id)sender;
+-(void)chooseAmiiboFolder:(id)sender;
+-(void)simulateAmiiboScan:(id)sender;
+-(void)scanAmiiboURL:(NSURL *)url;
+-(BOOL)loadAmiiboURL:(NSURL *)url;
+@end
+@implementation BOTWAmiiboMenuTarget
+-(void)chooseAmiibo:(id)sender{
+ (void)sender;
+ NSOpenPanel *panel=[NSOpenPanel openPanel];panel.canChooseFiles=YES;panel.canChooseDirectories=NO;
+ panel.allowsMultipleSelection=NO;panel.allowedFileTypes=@[@"json",@"bin"];
+ panel.message=@(TOTK_UI("选择 Emuiibo JSON 或原始 Amiibo .bin 文件","Choose an Emuiibo JSON or raw Amiibo .bin file"));
+ panel.prompt=@(TOTK_UI("加载 Amiibo","Load Amiibo"));
+ if([panel runModal]!=NSModalResponseOK)return;
+ if([self loadAmiiboURL:panel.URL])[amiiboPanel refreshFiles];
+}
+-(void)chooseAmiiboFolder:(id)sender{
+ (void)sender;
+ NSOpenPanel *panel=[NSOpenPanel openPanel];panel.canChooseFiles=NO;panel.canChooseDirectories=YES;panel.allowsMultipleSelection=NO;
+ NSString *saved=[[NSUserDefaults standardUserDefaults] stringForKey:@"BOTWAmiiboFolder"];
+ if(saved.length)panel.directoryURL=[NSURL fileURLWithPath:saved isDirectory:YES];
+ panel.message=@(TOTK_UI("选择存放 Amiibo 文件的文件夹","Choose the folder containing Amiibo files"));
+ panel.prompt=@(TOTK_UI("使用此文件夹","Use This Folder"));
+ if([panel runModal]!=NSModalResponseOK)return;
+ [[NSUserDefaults standardUserDefaults] setObject:panel.URL.path forKey:@"BOTWAmiiboFolder"];
+ [amiiboPanel refreshFiles];
+}
+-(BOOL)loadAmiiboURL:(NSURL *)url{
+ NSError *error=nil;NSData *data=[NSData dataWithContentsOfURL:url options:NSDataReadingMappedIfSafe error:&error];
+ BOOL isJSON=[[url.pathExtension lowercaseString] isEqualToString:@"json"];
+ id parsed=data&&isJSON?[NSJSONSerialization JSONObjectWithData:data options:0 error:&error]:nil;
+ NSString *problem=nil;
+ if(!data)problem=error.localizedDescription;
+ else if(isJSON&&![parsed isKindOfClass:NSDictionary.class])problem=@(TOTK_UI("JSON 根节点无效","Invalid JSON root object"));
+ RuntimeVirtualAmiibo amiibo={0};
+ NSString *name=nil;
+ if(!problem&&!isJSON){
+  const uint8_t *bytes=data.bytes;
+  if((data.length!=532&&data.length!=540)||bytes[0x10]!=0xa5||bytes[0x5b]!=0x02)
+   problem=@(TOTK_UI("文件不是受支持的 532/540 字节 Amiibo 转储","File is not a supported 532/540-byte Amiibo dump"));
+  else{
+   memcpy(amiibo.uuid,bytes,7);amiibo.uid_length=7;
+   amiibo.game_character_id=(uint16_t)bytes[0x54]|((uint16_t)bytes[0x55]<<8);
+   amiibo.character_variant=bytes[0x56];amiibo.figure_type=bytes[0x57];
+   amiibo.model_number=((uint16_t)bytes[0x58]<<8)|bytes[0x59];amiibo.series=bytes[0x5a];
+   amiibo.write_counter=((uint16_t)bytes[0x11]<<8)|bytes[0x12];
+   amiibo.first_write_year=amiibo.last_write_year=2000;
+   amiibo.first_write_month=amiibo.last_write_month=1;
+   amiibo.first_write_day=amiibo.last_write_day=1;
+   name=[[url.lastPathComponent stringByDeletingPathExtension] copy];
+  }
+ }
+ if(!problem&&isJSON){
+  NSDictionary *json=parsed,*identity=json[@"id"];
+  name=[json[@"name"] isKindOfClass:NSString.class]?json[@"name"]:nil;
+  NSArray *uuid=[json[@"uuid"] isKindOfClass:NSArray.class]?json[@"uuid"]:nil;
+  if(!name.length||![identity isKindOfClass:NSDictionary.class]||uuid.count!=10||
+     !front_amiibo_read_date(json[@"first_write_date"],&amiibo.first_write_year,&amiibo.first_write_month,&amiibo.first_write_day)||
+     !front_amiibo_read_date(json[@"last_write_date"],&amiibo.last_write_year,&amiibo.last_write_month,&amiibo.last_write_day))
+   problem=@"文件不是受支持的 Emuiibo amiibo.json";
+  uint64_t field=0;
+  if(!problem){
+   for(NSUInteger i=0;i<10;i++){if(!front_amiibo_read_uint(uuid[i],UINT8_MAX,&field)){problem=@"UUID 字节无效";break;}amiibo.uuid[i]=(uint8_t)field;}
+   amiibo.uid_length=7;
+  }
+  if(!problem&&!front_amiibo_read_uint(identity[@"game_character_id"],UINT16_MAX,&field))problem=@"game_character_id 无效";else if(!problem)amiibo.game_character_id=(uint16_t)field;
+  if(!problem&&!front_amiibo_read_uint(identity[@"character_variant"],UINT8_MAX,&field))problem=@"character_variant 无效";else if(!problem)amiibo.character_variant=(uint8_t)field;
+  if(!problem&&!front_amiibo_read_uint(identity[@"figure_type"],UINT8_MAX,&field))problem=@"figure_type 无效";else if(!problem)amiibo.figure_type=(uint8_t)field;
+  if(!problem&&!front_amiibo_read_uint(identity[@"model_number"],UINT16_MAX,&field))problem=@"model_number 无效";else if(!problem)amiibo.model_number=(uint16_t)field;
+  if(!problem&&!front_amiibo_read_uint(identity[@"series"],UINT8_MAX,&field))problem=@"series 无效";else if(!problem)amiibo.series=(uint8_t)field;
+  if(!problem&&!front_amiibo_read_uint(json[@"write_counter"],UINT16_MAX,&field))problem=@"write_counter 无效";else if(!problem)amiibo.write_counter=(uint16_t)field;
+  if(!problem&&!front_amiibo_read_uint(json[@"version"],UINT16_MAX,&field))problem=@"version 无效";else if(!problem)amiibo.version=(uint16_t)field;
+ }
+ if(problem){
+  NSAlert *alert=[NSAlert new];alert.messageText=@(TOTK_UI("无法加载 Amiibo","Could not load Amiibo"));alert.informativeText=problem;
+  [alert addButtonWithTitle:@(TOTK_UI("好","OK"))];[alert runModal];return NO;
+ }
+ if(!name.length){NSAlert *alert=[NSAlert new];alert.messageText=@(TOTK_UI("无法加载 Amiibo","Could not load Amiibo"));alert.informativeText=@(TOTK_UI("文件名为空","The file name is empty"));[alert addButtonWithTitle:@(TOTK_UI("好","OK"))];[alert runModal];return NO;}
+ NSString *shortName=[name substringToIndex:MIN((NSUInteger)10,name.length)];
+ snprintf(amiibo.name,sizeof amiibo.name,"%s",shortName.UTF8String);
+ runtime_nfp_set_virtual_amiibo(&amiibo);
+ amiiboCurrentID=front_amiibo_identifier(&amiibo);amiiboCurrentURL=url;
+ fprintf(stderr,"[botw] virtual Amiibo %s loaded\n",isJSON?"metadata":"raw dump");
+ return YES;
+}
+-(void)simulateAmiiboScan:(id)sender{
+ (void)sender;if(!amiiboCurrentID)return;
+ runtime_nfp_request_scan();front_amiibo_record_scan();
+ fprintf(stderr,"[botw] virtual Amiibo scan requested: today=%ld total=%ld\n",(long)front_amiibo_today_count(amiiboCurrentID),(long)front_amiibo_total_count(amiiboCurrentID));
+}
+-(void)scanAmiiboURL:(NSURL *)url{if([self loadAmiiboURL:url])[self simulateAmiiboScan:nil];}
+@end
+@implementation BOTWAmiiboPanel
+-(instancetype)init{
+ CGFloat w=620,h=fmin(540,window.contentView.bounds.size.height-32);
+ if(!(self=[super initWithFrame:NSMakeRect(0,0,w,h)]))return nil;
+ self.autoresizingMask=NSViewMinXMargin|NSViewMaxXMargin|NSViewMinYMargin|NSViewMaxYMargin;
+ self.appearance=[NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];self.wantsLayer=YES;
+ self.layer.backgroundColor=[NSColor colorWithCalibratedRed:0.10 green:0.16 blue:0.20 alpha:0.97].CGColor;
+ self.layer.cornerRadius=12;self.layer.borderWidth=1;self.layer.borderColor=[NSColor colorWithCalibratedWhite:1 alpha:0.16].CGColor;
+ NSTextField *title=[NSTextField labelWithString:@(TOTK_UI("虚拟 Amiibo","Virtual Amiibo"))];
+ title.font=[NSFont systemFontOfSize:19 weight:NSFontWeightSemibold];title.textColor=NSColor.whiteColor;title.frame=NSMakeRect(22,h-48,400,28);[self addSubview:title];
+ NSTextField *hint=[NSTextField labelWithString:@(TOTK_UI("点击列表中 Amiibo 后面的扫描按钮 · 也可从 1 菜单打开 · Esc 关闭面板","Click Scan beside an Amiibo · also available from the 1 menu · Esc closes this panel"))];
+ hint.font=[NSFont systemFontOfSize:12];hint.textColor=[NSColor colorWithCalibratedWhite:0.75 alpha:1];hint.frame=NSMakeRect(22,h-78,w-44,20);[self addSubview:hint];
+ NSButton *close=[NSButton buttonWithTitle:@"✕" target:self action:@selector(close:)];close.bordered=NO;close.refusesFirstResponder=YES;
+ close.font=[NSFont systemFontOfSize:15 weight:NSFontWeightBold];close.contentTintColor=NSColor.whiteColor;close.frame=NSMakeRect(w-48,h-48,28,28);[self addSubview:close];
+ NSButton *folder=[NSButton buttonWithTitle:@(TOTK_UI("选择文件夹…","Choose Folder…")) target:self action:@selector(chooseFolder:)];
+ folder.frame=NSMakeRect(22,h-128,145,30);folder.refusesFirstResponder=YES;[self addSubview:folder];
+ self.folderLabel=[NSTextField labelWithString:@""];self.folderLabel.font=[NSFont systemFontOfSize:12];
+ self.folderLabel.textColor=[NSColor colorWithCalibratedWhite:0.78 alpha:1];self.folderLabel.lineBreakMode=NSLineBreakByTruncatingMiddle;
+ self.folderLabel.frame=NSMakeRect(180,h-128,w-202,30);[self addSubview:self.folderLabel];
+ self.listScrollView=[[NSScrollView alloc] initWithFrame:NSMakeRect(22,62,w-44,h-210)];
+ self.listScrollView.hasVerticalScroller=YES;self.listScrollView.borderType=NSBezelBorder;
+ self.listScrollView.drawsBackground=YES;self.listScrollView.backgroundColor=[NSColor colorWithCalibratedWhite:0 alpha:0.12];
+ self.fileList=[[NSView alloc] initWithFrame:NSMakeRect(0,0,self.listScrollView.contentSize.width,self.listScrollView.contentSize.height)];
+ self.listScrollView.documentView=self.fileList;[self addSubview:self.listScrollView];
+ NSButton *load=[NSButton buttonWithTitle:@(TOTK_UI("加载单个文件…","Load One File…")) target:self action:@selector(loadOneFile:)];
+ load.frame=NSMakeRect(22,18,160,32);load.refusesFirstResponder=YES;[self addSubview:load];
+ [self refreshFiles];return self;
+}
+-(void)refreshFiles{
+ NSString *folder=[[NSUserDefaults standardUserDefaults] stringForKey:@"BOTWAmiiboFolder"];
+ self.folderLabel.stringValue=folder.length?folder:@(TOTK_UI("尚未选择文件夹","No folder selected"));
+ NSString *emptyMessage=nil;NSMutableArray<NSURL *> *files=[NSMutableArray array];
+ if(!folder.length)emptyMessage=@(TOTK_UI("请先选择 Amiibo 文件夹","Choose an Amiibo folder first"));
+ else{
+  NSError *error=nil;NSArray<NSURL *> *urls=front_amiibo_files(folder,&error);
+  if(!urls){fprintf(stderr,"[botw] cannot read Amiibo folder: %s\n",error.localizedDescription.UTF8String);emptyMessage=@(TOTK_UI("无法读取文件夹","Could not read folder"));}
+  else for(NSURL *url in urls){
+   NSString *extension=url.pathExtension.lowercaseString;
+   if([extension isEqualToString:@"bin"]||[extension isEqualToString:@"json"])[files addObject:url];
+  }
+  if(urls&&!files.count)emptyMessage=@(TOTK_UI("文件夹中没有 .bin 或 .json 文件","No .bin or .json files in this folder"));
+ }
+ self.files=files;
+ CGFloat rowHeight=56,listWidth=self.listScrollView.contentSize.width;
+ CGFloat documentHeight=fmax(self.listScrollView.bounds.size.height,self.files.count*rowHeight);
+ self.fileList.frame=NSMakeRect(0,0,listWidth,documentHeight);
+ for(NSView *view in self.fileList.subviews)[view removeFromSuperview];
+ if(emptyMessage){
+  NSTextField *empty=[NSTextField labelWithString:emptyMessage];empty.font=[NSFont systemFontOfSize:13];
+  empty.textColor=[NSColor colorWithCalibratedWhite:0.75 alpha:1];empty.alignment=NSTextAlignmentCenter;
+  empty.frame=NSMakeRect(12,(documentHeight-24)/2,listWidth-24,24);[self.fileList addSubview:empty];return;
+ }
+ [self.files enumerateObjectsUsingBlock:^(NSURL *url,NSUInteger index,BOOL *stop){
+  (void)stop;CGFloat y=documentHeight-(index+1)*rowHeight;
+  NSView *row=[[NSView alloc] initWithFrame:NSMakeRect(4,y+2,listWidth-8,rowHeight-4)];row.wantsLayer=YES;
+  row.layer.backgroundColor=[NSColor colorWithCalibratedWhite:1 alpha:0.07].CGColor;row.layer.cornerRadius=6;
+  NSString *identifier=front_amiibo_identifier_for_url(url);
+  NSString *count=identifier?[NSString stringWithFormat:@(TOTK_UI("今日 %ld 次 · 累计 %ld 次","Today %ld · Total %ld")),(long)front_amiibo_today_count(identifier),(long)front_amiibo_total_count(identifier)]
+                            :@(TOTK_UI("次数未知","Count unavailable"));
+  NSTextField *countLabel=[NSTextField labelWithString:count];countLabel.font=[NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
+  countLabel.textColor=[NSColor colorWithCalibratedWhite:0.78 alpha:1];countLabel.frame=NSMakeRect(12,27,listWidth-142,16);[row addSubview:countLabel];
+  NSTextField *name=[NSTextField labelWithString:url.lastPathComponent];name.font=[NSFont systemFontOfSize:12];
+  name.textColor=NSColor.whiteColor;name.lineBreakMode=NSLineBreakByTruncatingMiddle;name.frame=NSMakeRect(12,8,listWidth-142,18);[row addSubview:name];
+  NSButton *scan=[NSButton buttonWithTitle:@(TOTK_UI("扫描","Scan")) target:self action:@selector(scanRow:)];
+  scan.tag=(NSInteger)index;scan.refusesFirstResponder=YES;scan.frame=NSMakeRect(listWidth-100,11,86,30);[row addSubview:scan];
+  [self.fileList addSubview:row];
+ }];
+}
+-(void)scanRow:(NSButton *)button{
+ NSInteger index=button.tag;
+ if(index>=0&&(NSUInteger)index<self.files.count)[amiiboMenuTarget scanAmiiboURL:self.files[(NSUInteger)index]];
+}
+-(void)chooseFolder:(id)sender{(void)sender;[amiiboMenuTarget chooseAmiiboFolder:nil];}
+-(void)loadOneFile:(id)sender{(void)sender;[amiiboMenuTarget chooseAmiibo:nil];}
+-(void)close:(id)sender{(void)sender;amiibo_panel_show(0);}
+-(void)center{if(self.superview)[self setFrameOrigin:NSMakePoint(floor((self.superview.bounds.size.width-self.frame.size.width)/2),floor((self.superview.bounds.size.height-self.frame.size.height)/2))];}
+-(void)viewDidMoveToSuperview{[super viewDidMoveToSuperview];[self center];}
+@end
+static void amiibo_panel_show(int open){
+ open=!!open;if(!window||open==amiiboPanelOpen)return;
+ if(open){if(settingsOpen)return;if(!amiiboMenuTarget)amiiboMenuTarget=[BOTWAmiiboMenuTarget new];if(!amiiboPanel)amiiboPanel=[BOTWAmiiboPanel new];
+  amiiboPanelOpen=1;runtime_input_clear();[window.contentView addSubview:amiiboPanel];[amiiboPanel refreshFiles];[amiiboPanel center];[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];}
+ else{amiiboPanelOpen=0;[amiiboPanel removeFromSuperview];[window makeFirstResponder:window.contentView];
+  if(window.isKeyWindow&&(window.styleMask&NSWindowStyleMaskFullScreen))[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:YES];}
+ front_mouse_update();fprintf(stderr,"[botw] virtual Amiibo panel %s\n",open?"open":"closed");
+}
+#endif
 /* Use the window-close path, not terminate:, so Command-Q also waits for active saves. */
 static void front_install_menu(void){
  NSMenu *menu=[NSMenu new],*appMenu=[NSMenu new];
  NSMenuItem *appItem=[NSMenuItem new];appItem.submenu=appMenu;[menu addItem:appItem];
  NSMenuItem *quit=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("退出 " GAME_NAME,"Quit " GAME_NAME)) action:@selector(performClose:) keyEquivalent:@"q"];
  quit.keyEquivalentModifierMask=NSEventModifierFlagCommand;quit.target=window;
- [appMenu addItem:quit];front_menubar_fps_add(menu);NSApp.mainMenu=menu;
+ [appMenu addItem:quit];
+ front_menubar_fps_add(menu);NSApp.mainMenu=menu;
 }
 static void *guest_main(void *callback){@autoreleasepool{((void(*)(void))callback)();}return NULL;}
 void runtime_front_run(void(*callback)(void)){
