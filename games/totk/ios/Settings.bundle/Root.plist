@@ -104,6 +104,34 @@
 			<key>Type</key>
 			<string>PSGroupSpecifier</string>
 			<key>Title</key>
+			<string>觸控操作 · Touch controls</string>
+			<key>FooterText</key>
+			<string>未連接手柄時使用手機的陀螺儀和觸覺馬達；接上手柄後自動讓位。重新啟動遊戲後生效 · uses the phone's gyro and haptic actuator with no controller connected; a connected controller takes over. Takes effect after relaunching the game</string>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
+			<key>Key</key>
+			<string>TOTK_PHONE_GYRO</string>
+			<key>Title</key>
+			<string>手機體感 · Phone gyro</string>
+			<key>DefaultValue</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
+			<key>Key</key>
+			<string>TOTK_PHONE_HAPTICS</string>
+			<key>Title</key>
+			<string>手機震動 · Phone haptics</string>
+			<key>DefaultValue</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+			<key>Title</key>
 			<string>除錯 · Debug</string>
 			<key>FooterText</key>
 			<string>開啟後把日誌寫進 App 的 Documents/log.txt（在 Mac 上讀取），會稍微影響效能；關閉時不記錄任何日誌。重新啟動遊戲後生效 · writes Documents/log.txt for reading on a Mac (slightly slower); off records nothing. Takes effect after relaunching the game</string>

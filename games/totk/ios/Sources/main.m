@@ -219,7 +219,7 @@ static void audio_observe(void) {
     NSString *log = [docs stringByAppendingPathComponent:@"log.txt"];
     const char *debugEnv = getenv("TOTK_DEBUG_LOG");
     BOOL debugLog = debugEnv ? (*debugEnv && strcmp(debugEnv,"0")) : [NSUserDefaults.standardUserDefaults boolForKey:@"TOTK_DEBUG_LOG"];
-    if (debugLog) { if (freopen(log.fileSystemRepresentation,"w",stderr)) setvbuf(stderr,NULL,_IOLBF,0); }
+    if (debugLog) { if (freopen(log.fileSystemRepresentation,"w",stderr)) setvbuf(stderr,NULL,_IOLBF,0); setenv("TOTK_UW_CATALOG","1",0); }
     else { [fm removeItemAtPath:log error:nil]; if (freopen("/dev/null","w",stderr)) setvbuf(stderr,NULL,_IOFBF,1<<16); }
     setenv("TOTK_ROMFS",[res stringByAppendingPathComponent:@"romfs"].fileSystemRepresentation,1);
     setenv("TOTK_GAME_DATA",[res stringByAppendingPathComponent:@"game-data"].fileSystemRepresentation,1);   // runtime/game_data.h

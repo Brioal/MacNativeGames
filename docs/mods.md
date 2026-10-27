@@ -24,6 +24,16 @@ The launcher points `TOTK_ROMFS_MODS` at
 where `<version>` is the game version the app was built from: `v0` (1.0.0), `v112` (1.1.2), `v121`
 (1.2.1) or `v143` (1.4.3).
 
+When no controller is connected at start and `mods/<version>-keyboard/manifest.tsv` exists, the launcher points
+`TOTK_ROMFS_MODS` at that folder instead, so the prompts show the Mac keyboard's keys while you play on the keyboard:
+
+```sh
+python3.14 scripts/make_button_icons.py "$HOME/Library/Application Support/MacNativeGames/TOTK/mods/v0-keyboard" \
+  --app "Tears of the Kingdom.app" --version v0 --style azerty   # or --style keyboard for a US layout
+```
+
+The choice is made once per start: connecting a controller later keeps the keyboard icons until the next start.
+
 ### What `manifest.tsv` is
 
 Only the files listed in `manifest.tsv` are served. Each line has four tab-separated fields:
@@ -233,6 +243,40 @@ rewriter's own SHA-256 too, so a changed `patch_nso.py` makes it rewrite instead
 The 2K output overlay records the heap table it was built on: a build without `--mod` after a build with it
 rebuilds the overlay from the retail table instead of keeping the mod's heap sizes.
 
+### Large texture packs (8 GB mode)
+
+Some texture packs are made for an emulator's 8 GB DRAM mode and do not fit the 3.2 GiB a retail console gives the game.
+One such pack is the **[Tears of the Kingdom 4K Texture Pack by HDPacks](https://www.hdpacks.com/)** (made by
+HDPacks.com, who offer it as a free download on their site; it is their work and is not part of this repository: get it
+from them and follow their terms). Played on the Mac with 1.4.3:
+
+1. Put the pack's `romfs` files (for the HDPacks pack, `4kTextures/RomFS`) into the version's mod folder
+   (`mods/v143`), together with any other mod you use.
+2. The pack's heap table and resource size tables are made for the version it was built for (the HDPacks pack: up to
+   1.2.1). Fit them to the app's version:
+
+   ```sh
+   python3.14 games/totk/scripts/texture_pack_tables.py ~/Library/Application\ Support/MacNativeGames/TOTK/mods/v143 \
+       --app "Tears of the Kingdom.app"
+   ```
+
+   It writes 1.4.3's own `HeapDef` with only the heaps the pack makes bigger raised (for the HDPacks pack: `TextureHeap`,
+   `ゲームグラフィックス` and `草`), and 1.4.3's `ResourceSizeTable.Product.143` with every replaced texture's entry grown
+   by as much as the file grew. Then write the manifest with `make_mod_manifest.py` as usual. Run both again whenever
+   the folder changes.
+3. Start the game in 8 GB mode, with a larger GPU memory budget:
+
+   ```sh
+   open --env TOTK_DRAM_8GB=1 --env TOTK_GPU_BUDGET_MB=11264 "Tears of the Kingdom.app"
+   ```
+
+   `TOTK_DRAM_8GB` reports a 6.8 GiB application pool to the game (as the emulators' 8 GB mode does) and lets one
+   memory pool be a zero-copy GPU buffer of up to 4 GiB (the pack's `TextureHeap` pool is about 3.8 GiB; the limit is
+   1 GiB otherwise). The budget's default (30 % of the Mac's memory) is too small for the pack outdoors.
+
+Checked on a 24 GB M-series Mac: about 8.7 GB resident in play and the GPU near full load (the GPU is the
+bottleneck). A Mac with less memory than that is not expected to run it.
+
 ### Breath of the Wild
 
 The Breath of the Wild app reads its mods from the folder for its version, `botw160` for 1.6.0 or `botw190` for 1.9.0:
@@ -360,6 +404,16 @@ These come from how a pack was built, not from its content, and none of them pri
 
 `<version>` 是构建这个 App 时使用的游戏版本：`v0`（1.0.0）、`v112`（1.1.2）、`v121`（1.2.1）、
 `v143`（1.4.3）。
+
+启动时没有连接手柄、且 `mods/<version>-keyboard/manifest.tsv` 存在时，启动器改把 `TOTK_ROMFS_MODS` 指向那个目录，
+用键盘玩的时候提示里显示的就是 Mac 键盘的按键：
+
+```sh
+python3.14 scripts/make_button_icons.py "$HOME/Library/Application Support/MacNativeGames/TOTK/mods/v0-keyboard" \
+  --app "Tears of the Kingdom.app" --version v0 --style azerty   # 美式键盘用 --style keyboard
+```
+
+每次启动只选一次：游戏中途再接上手柄，键盘图标会保留到下次启动。
 
 ### manifest.tsv 是什么
 
@@ -538,6 +592,34 @@ mod 的 `exefs/` 里可能还有这些文件，构建这样处理：
 步）。已经合并过的结果会复用：记录的哈希一致时跳过改写；记录里也写了改写器自己的 SHA-256，所以 `patch_nso.py`
 一改就会重新改写，而不是复用旧镜像。2K 输出覆盖文件会记下它是在哪份堆表上生成的：先带 `--mod` 构建、之后不带
 `--mod` 再构建时，会按原版堆表重新生成，而不是继续沿用 mod 的堆大小。
+
+### 大型材质包（8 GB 模式）
+
+有些材质包是给模拟器的 8 GB DRAM 模式做的，装不进真机给游戏的 3.2 GiB。例如 **[HDPacks 的王国之泪 4K 材质包](https://www.hdpacks.com/)**
+（HDPacks.com 制作，可在其网站免费下载；这是他们的作品，不在本仓库里：请从他们那里获取并遵守他们的条款）。在 Mac 上配合
+1.4.3 使用：
+
+1. 把材质包的 `romfs` 文件（HDPacks 的包是 `4kTextures/RomFS`）和你用的其他 mod 一起放进该版本的 mod 文件夹（`mods/v143`）。
+2. 材质包自带的堆表和资源尺寸表是按它对应的版本做的（HDPacks 的包最高到 1.2.1），先改成 App 的版本：
+
+   ```sh
+   python3.14 games/totk/scripts/texture_pack_tables.py ~/Library/Application\ Support/MacNativeGames/TOTK/mods/v143 \
+       --app "Tears of the Kingdom.app"
+   ```
+
+   它写出 1.4.3 自己的 `HeapDef`，只把材质包加大的堆调大（HDPacks 的包：`TextureHeap`、`ゲームグラフィックス`、`草`），
+   并写出 1.4.3 的 `ResourceSizeTable.Product.143`，每个被替换贴图的条目按文件变大的量加大。然后照常用
+   `make_mod_manifest.py` 生成清单。文件夹有变化时两步都要重跑。
+3. 用 8 GB 模式和更大的显存预算启动：
+
+   ```sh
+   open --env TOTK_DRAM_8GB=1 --env TOTK_GPU_BUDGET_MB=11264 "Tears of the Kingdom.app"
+   ```
+
+   `TOTK_DRAM_8GB` 向游戏报告 6.8 GiB 的应用内存池（和模拟器的 8 GB 模式一样），并允许单个内存池做成最大 4 GiB 的零拷贝
+   GPU 缓冲（材质包的 `TextureHeap` 池约 3.8 GiB，平时上限 1 GiB）。默认预算（本机内存的 30%）在野外不够用。
+
+在 24 GB 的 Apple 芯片 Mac 上验证：游玩时常驻内存约 8.7 GB，GPU 接近满载（瓶颈在 GPU）。内存更小的 Mac 预计跑不动。
 
 ### 旷野之息
 

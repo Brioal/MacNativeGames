@@ -28,7 +28,7 @@ How it works: bring your game file (XCI or NSP) and your `prod.keys`; one script
 | Game | Version | Platform | Status | Folder |
 |---|---|---|---|---|
 | The Legend of Zelda: Tears of the Kingdom | 1.0.0, 1.2.1, 1.4.3 (1.1.2 builds too) | Mac, iPhone, iPad; Apple Vision Pro (windowed, early) | Supported | [`games/totk`](docs/install.md) ([Vision Pro](docs/install.md#apple-vision-pro)) |
-| The Legend of Zelda: Breath of the Wild | 1.6.0, 1.9.0 | Mac; 1.6.0 also on the iPhone | Supported | [`games/totk`](docs/install.md#breath-of-the-wild-160-and-190-early) (shared runtime), list in `games/botw` |
+| The Legend of Zelda: Breath of the Wild | 1.6.0, 1.9.0 | Mac; 1.6.0 also on the iPhone | Supported | [`games/totk`](docs/install.md#breath-of-the-wild) (shared runtime), list in `games/botw` |
 | Super Smash Bros. Ultimate | 13.0.2 | Mac | Community port | [`games/ssbu`](games/ssbu/README.md) |
 | Super Mario Odyssey | 1.3.0 | Mac | Community port, early | [`games/odyssey`](games/odyssey/README.md) |
 | Bayonetta 3 | 1.2.0 | Mac | Community port, work in progress | [`games/by3`](games/by3/README.md) |
@@ -36,10 +36,13 @@ How it works: bring your game file (XCI or NSP) and your `prod.keys`; one script
 | Ori and the Blind Forest: Definitive Edition | 1.0.1 | Mac | Community port | [`games/ori`](games/ori/README.md) |
 | Super Mario Party Jamboree | 2.3.0 | Mac | Community port, experimental | [`games/jamboree`](games/jamboree/README.md) |
 | Mario vs. Donkey Kong | 1.0.1 | Mac | Community port, early | [`games/mvdk`](games/mvdk/README.md) |
+| Metroid Dread | 1.0.0 | Mac | Community port, early | [`games/dread`](games/dread/README.md) |
 
 Community ports keep their own runtime, graphics layer and scripts in their folder and are built with the steps there.
 
-> **Recommended: let an AI assistant install and test it for you.** Open this repository in Claude Code, Codex, or any other AI assistant you like, tell it where your own game file and `prod.keys` are, and ask it to build and install the app and to sort out whatever comes up on your Mac. It reads [docs/install.md](docs/install.md), runs every step and checks the result; you just wait with a coffee. Installing and testing by hand is not recommended: there are many steps, and every Mac, game version and dump is a little different. That's why I haven't provided a one-click build option: an AI assistant is my one-click build option.
+> **Recommended: let an AI assistant install and test it for you.** Open this repository in Claude Code, Codex, or any other AI assistant you like, tell it where your own game file and `prod.keys` are, and ask it to build and install the app and to sort out whatever comes up on your Mac. It follows the [install skill](.claude/skills/install-zelda/SKILL.md), runs every step and checks the result; you just wait with a coffee. Installing and testing by hand is not recommended: there are many steps, and every Mac, game version and dump is a little different. That's why I haven't provided a one-click build option: an AI assistant is my one-click build option.
+>
+> **The install skill** ([`.claude/skills/install-zelda/SKILL.md`](.claude/skills/install-zelda/SKILL.md)) is a short guide written for the assistant: which of your files goes where, the command for your case, how long each step takes (a build is 20–40 minutes; it must not be stopped), and the fix for each common error. Claude Code finds it by itself (or type `/install-zelda`). With any other assistant, start with: *"Read .claude/skills/install-zelda/SKILL.md and follow it to install Tears of the Kingdom for me."*
 
 ## Let's maintain the shader list together: no more stutter
 
@@ -58,17 +61,19 @@ The [shared shader list](docs/shader-list.md) now holds **13,422 shader variants
 
 ## Install and play
 
-Everything from building the app to playing is in **[docs/install.md](docs/install.md)**. The recommended way is to hand it to an AI assistant (see the top of this page) rather than run the steps yourself:
+Everything from building the app to playing is in **[docs/install.md](docs/install.md)**. The recommended way is to hand it to an AI assistant with the [install skill](.claude/skills/install-zelda/SKILL.md) (see the top of this page) rather than run the steps yourself:
 
-- [What you need](docs/install.md#what-you-need) · [Build the app](docs/install.md#build-the-app) · [Breath of the Wild](docs/install.md#breath-of-the-wild-160-and-190-early) · [iPhone and iPad](docs/install.md#iphone-and-ipad) · [Apple Vision Pro](docs/install.md#apple-vision-pro)
-- [Controls](docs/install.md#controls) · [Where things are](docs/install.md#where-things-are) · [Known issues](docs/install.md#known-issues)
-- [Local testing](docs/install.md#local-testing) · [Audio fix](docs/install.md#audio-fix)
+- [What you need](docs/install.md#what-you-need) · [Build the app](docs/install.md#build-the-app) · [Breath of the Wild](docs/install.md#breath-of-the-wild) · [iPhone and iPad](docs/install.md#iphone-and-ipad) · [Apple Vision Pro](docs/install.md#apple-vision-pro)
+- [Controls](docs/controls.md) · [Where things are](docs/install.md#where-things-are) · [Known issues](docs/install.md#known-issues)
+- [Test records](docs/test-records.md)
 
 ## How it works
 
 See [docs/how-it-works.md](docs/how-it-works.md).
 
 Recorded performance experiments, remaining work and comparison methods: [Mac performance follow-ups](docs/performance-followups.md).
+
+Measuring by game state with the Metal performance tools of macOS 27 (`TOTK_STATE_REPORTING=1`, `metal_perf_report.py`): [Metal performance diagnostics](docs/metal-performance-diagnostics.md).
 
 ## Acknowledgements
 
@@ -109,7 +114,7 @@ Apple、Mac、iPhone、iPad、Apple Vision Pro 和 Metal 是 Apple Inc. 的商�
 | 游戏 | 版本 | 平台 | 状态 | 目录 |
 |---|---|---|---|---|
 | 塞尔达传说 王国之泪 | 1.0.0、1.2.1、1.4.3（1.1.2 也能打包） | Mac、iPhone、iPad；Apple Vision Pro（窗口内游玩，早期） | 正式支持 | [`games/totk`](docs/install.zh-CN.md)（[Vision Pro](docs/install.zh-CN.md#apple-vision-pro)） |
-| 塞尔达传说 旷野之息 | 1.6.0、1.9.0 | Mac；1.6.0 也能在 iPhone 上玩 | 正式支持 | [`games/totk`](docs/install.zh-CN.md#旷野之息-160-和-190早期)（共用运行时），清单在 `games/botw` |
+| 塞尔达传说 旷野之息 | 1.6.0、1.9.0 | Mac；1.6.0 也能在 iPhone 上玩 | 正式支持 | [`games/totk`](docs/install.zh-CN.md#旷野之息)（共用运行时），清单在 `games/botw` |
 | 任天堂明星大乱斗 特别版 | 13.0.2 | Mac | 社区移植 | [`games/ssbu`](games/ssbu/README.md) |
 | 超级马力欧 奥德赛 | 1.3.0 | Mac | 社区移植，早期 | [`games/odyssey`](games/odyssey/README.md) |
 | 猎天使魔女 3 | 1.2.0 | Mac | 社区移植，开发中 | [`games/by3`](games/by3/README.md) |
@@ -117,10 +122,13 @@ Apple、Mac、iPhone、iPad、Apple Vision Pro 和 Metal 是 Apple Inc. 的商�
 | 奥日与黑暗森林 终极版 | 1.0.1 | Mac | 社区移植 | [`games/ori`](games/ori/README.md) |
 | 超级马力欧派对 空前盛会 | 2.3.0 | Mac | 社区移植，实验 | [`games/jamboree`](games/jamboree/README.md) |
 | 马力欧 vs. 大金刚 | 1.0.1 | Mac | 社区移植，早期 | [`games/mvdk`](games/mvdk/README.md) |
+| 密特罗德 生存恐惧 | 1.0.0 | Mac | 社区移植，早期 | [`games/dread`](games/dread/README.md) |
 
 社区移植的游戏各自在自己的目录里带一份运行时、图形层和脚本，按那里的步骤构建。
 
-> **推荐的安装测试方式：交给 AI 助理。** 用 Claude Code、Codex 或其他你喜欢的 AI 助理打开这个仓库，告诉它你自己的游戏文件和 `prod.keys` 在哪，让它帮你打包、安装 App，遇到这台 Mac 上的问题也让它处理。它会读 [docs/install.zh-CN.md](docs/install.zh-CN.md)，一步步跑完并检查结果，你只需要喝杯咖啡等着。不推荐自己手动安装测试：步骤多，每台 Mac、每个游戏版本、每份导出的游戏文件都有些差别。这也是我没有提供一键打包的原因：AI 助理就是我的一键打包。
+> **推荐的安装测试方式：交给 AI 助理。** 用 Claude Code、Codex 或其他你喜欢的 AI 助理打开这个仓库，告诉它你自己的游戏文件和 `prod.keys` 在哪，让它帮你打包、安装 App，遇到这台 Mac 上的问题也让它处理。它会按[安装 skill](.claude/skills/install-zelda/SKILL.md) 一步步跑完并检查结果，你只需要喝杯咖啡等着。不推荐自己手动安装测试：步骤多，每台 Mac、每个游戏版本、每份导出的游戏文件都有些差别。这也是我没有提供一键打包的原因：AI 助理就是我的一键打包。
+>
+> **安装 skill**（[`.claude/skills/install-zelda/SKILL.md`](.claude/skills/install-zelda/SKILL.md)）是写给 AI 助理的简短指南：你的哪个文件放在哪个参数、你这种情况用哪条命令、每一步要多久（一次打包 20–40 分钟，中途不能停），以及常见报错各怎么解决。Claude Code 会自己找到它（也可以输入 `/install-zelda`）。用其他 AI 助理时，第一句这样说：*“读 .claude/skills/install-zelda/SKILL.md，按它帮我安装王国之泪。”*
 
 ## 让我们一起维护着色器清单：游戏不再卡顿
 
@@ -139,17 +147,19 @@ Apple、Mac、iPhone、iPad、Apple Vision Pro 和 Metal 是 Apple Inc. 的商�
 
 ## 安装与游玩
 
-从打包 App 到开始游玩的全部步骤见 **[docs/install.zh-CN.md](docs/install.zh-CN.md)**。推荐交给 AI 助理去跑（见本页开头），不推荐自己一步步手动操作：
+从打包 App 到开始游玩的全部步骤见 **[docs/install.zh-CN.md](docs/install.zh-CN.md)**。推荐交给 AI 助理按[安装 skill](.claude/skills/install-zelda/SKILL.md) 去跑（见本页开头），不推荐自己一步步手动操作：
 
-- [需要准备](docs/install.zh-CN.md#需要准备) · [打包 App](docs/install.zh-CN.md#打包-app) · [旷野之息](docs/install.zh-CN.md#旷野之息-160-和-190早期) · [iPhone 和 iPad](docs/install.zh-CN.md#iphone-和-ipad) · [Apple Vision Pro](docs/install.zh-CN.md#apple-vision-pro)
-- [操作](docs/install.zh-CN.md#操作) · [文件位置](docs/install.zh-CN.md#文件位置) · [已知问题](docs/install.zh-CN.md#已知问题)
-- [本机测试](docs/install.zh-CN.md#本机测试) · [音频修复](docs/install.zh-CN.md#音频修复)
+- [需要准备](docs/install.zh-CN.md#需要准备) · [打包 App](docs/install.zh-CN.md#打包-app) · [旷野之息](docs/install.zh-CN.md#旷野之息) · [iPhone 和 iPad](docs/install.zh-CN.md#iphone-和-ipad) · [Apple Vision Pro](docs/install.zh-CN.md#apple-vision-pro)
+- [操作](docs/controls.zh-CN.md) · [文件位置](docs/install.zh-CN.md#文件位置) · [已知问题](docs/install.zh-CN.md#已知问题)
+- [测试记录](docs/test-records.zh-CN.md)
 
 ## 工作原理
 
 见 [docs/how-it-works.md](docs/how-it-works.md)。
 
 已做的性能实验、待办与对比方法见 [Mac 性能待做](docs/performance-followups.md)。
+
+用 macOS 27 的 Metal 性能工具按游戏状态测量（`TOTK_STATE_REPORTING=1`、`metal_perf_report.py`）：见 [Metal 性能诊断](docs/metal-performance-diagnostics.md#macos-27-上的-metal-性能诊断)。
 
 ## 致谢
 

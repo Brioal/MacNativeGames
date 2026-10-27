@@ -4,6 +4,9 @@
 //   ~/Library/Logs/MacNativeGames/totk.log             this run, only with the debug log on (totk.previous.log: the one before; botw.log for Breath of the Wild)
 // If the game is already running, the launcher only brings it to the front.
 #import <AppKit/AppKit.h>
+#import <GameController/GameController.h>
+#include <IOKit/hid/IOHIDManager.h>
+#include <IOKit/hid/IOHIDUsageTables.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <libproc.h>
@@ -25,6 +28,26 @@ static void show_error(NSString *detail) {
     alert.messageText = @"The game could not start";
     alert.informativeText = detail;
     [alert runModal];
+}
+
+/* Whether a game controller is connected: a HID joystick / gamepad (DualSense, Pro Controller, Xbox over Bluetooth),
+   or one the GameController framework adopts (Xbox over USB), which it reports a moment after the first run loop turns. */
+static BOOL controller_connected(void) {
+    IOHIDManagerRef hid = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
+    NSMutableArray *matching = [NSMutableArray array];
+    for (NSNumber *usage in @[@(kHIDUsage_GD_Joystick), @(kHIDUsage_GD_GamePad), @(kHIDUsage_GD_MultiAxisController)])
+        [matching addObject:@{@kIOHIDDeviceUsagePageKey: @(kHIDPage_GenericDesktop), @kIOHIDDeviceUsageKey: usage}];
+    IOHIDManagerSetDeviceMatchingMultiple(hid, (__bridge CFArrayRef)matching);
+    CFSetRef devices = IOHIDManagerCopyDevices(hid);
+    BOOL found = devices && CFSetGetCount(devices) > 0;
+    if (devices) CFRelease(devices);
+    CFRelease(hid);
+    for (int i = 0; !found && i < 10; i++) {
+        for (GCController *controller in GCController.controllers)
+            if (controller.extendedGamepad) found = YES;
+        if (!found) [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+    }
+    return found;
 }
 
 static NSDictionary<NSString *, NSString *> *kv_read(NSString *path) {
@@ -206,8 +229,15 @@ int main(int argc, char **argv) {
         setenv("TOTK_GAME_SLOT_DIR", slot.fileSystemRepresentation, 1);
         setenv("TOTK_ROMFS_PROOF_DIR", data.fileSystemRepresentation, 1);   // the app bundle stays read-only
         setenv("TOTK_SHARED_FONTS", "extracted/firmware/shared-fonts", 1);
-        /* Player mods (runtime/romfs.c): <data>/mods/<version>/manifest.tsv, when present. */
-        setenv("TOTK_ROMFS_MODS", [data stringByAppendingPathComponent:@"mods/" TOTK_GAME_DIR].fileSystemRepresentation, 0);
+        /* Player mods (runtime/romfs.c): <data>/mods/<version>/manifest.tsv, when present. With no controller connected at
+           start, <data>/mods/<version>-keyboard takes its place when it holds a manifest (keyboard key icons in the prompts:
+           scripts/make_button_icons.py --style keyboard or azerty). The fonts are read once, so it holds for the session. */
+        NSString *mods = [data stringByAppendingPathComponent:@"mods/" TOTK_GAME_DIR];
+        NSString *keyboardMods = [mods stringByAppendingString:@"-keyboard"];
+        if (!getenv("TOTK_ROMFS_MODS") && [NSFileManager.defaultManager fileExistsAtPath:[keyboardMods stringByAppendingPathComponent:@"manifest.tsv"]] &&
+            !controller_connected())
+            mods = keyboardMods;
+        setenv("TOTK_ROMFS_MODS", mods.fileSystemRepresentation, 0);
         /* The game's language (runtime/services.c): the app's first preferred language, which also follows a per-app
            language (defaults write org.macnativegames.totk AppleLanguages -array pt-BR). TOTK_LANG still overrides it. */
         NSString *preferred = NSLocale.preferredLanguages.firstObject;

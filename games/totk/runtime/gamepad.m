@@ -21,7 +21,19 @@
 static pthread_mutex_t gamepadLock = PTHREAD_MUTEX_INITIALIZER;
 static RuntimeGamepadState gamepadState;
 static uint64_t pressedEdges;
+static RuntimeGamepadState textPad;
+static uint64_t textEdges;
+static _Atomic int textCapture;       /* gamepadLock: 1 UI owns input, 2 wait for release, 0 game */
 static BOOL started;
+static _Atomic int settingsShortcutEnabled;
+static int settingsShortcutDown, settingsShortcutPending;
+/* The chord opens the settings panel only once it has been held for a second (user 2026-10-27): L2 + R2 + L3 is also
+   ZL + ZR + L3 in the game, pressed together for a moment while sneaking with the bow. Held still, the controller sends
+   no events, so the panel's 60 Hz timer (runtime_gamepad_settings_requested) decides when the second is up. */
+#define SETTINGS_HOLD_NS 1000000000ULL
+static uint64_t settingsChordSince;
+static int settingsChordFired;
+#define SETTINGS_CHORD ((1ull << 8) | (1ull << 9) | (1ull << 4))
 static uint16_t controllerMap[CONTROLLER_BUTTONS];
 static uint8_t controllerModes[CONTROLLER_BUTTONS];
 static uint64_t physicalPrev;
@@ -480,13 +492,13 @@ static void refresh_gamepads(void) {
     for (int i = 0; i < CONTROLLER_BUTTONS; i++) {
         uint64_t bit = 1ULL << i;
         int kind = controller_mode_kind(controllerModes[i]);
-        if (kind == CONTROLLER_TAP && (edges & bit)) {
+        if (!textCapture && !(settingsShortcutEnabled && (physical & SETTINGS_CHORD) == SETTINGS_CHORD) && kind == CONTROLLER_TAP && (edges & bit)) {
             tapUntil[i] = now + 400000000ULL;
             /* Release the pulse even if the controller sends no further event. */
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(400 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{ refresh_gamepads(); });
         }
         if (kind == CONTROLLER_TOGGLE) {
-            if (edges & bit) { toggleOn[i] = !toggleOn[i]; toggleMoved[i] = moving; }
+            if (!textCapture && !(settingsShortcutEnabled && (physical & SETTINGS_CHORD) == SETTINGS_CHORD) && (edges & bit)) { toggleOn[i] = !toggleOn[i]; toggleMoved[i] = moving; }
             if (toggleOn[i] && moving) toggleMoved[i] = 1;
             /* A toggle ends when the stick returns to center after moving, or the controller goes away; clicking at rest
                waits for the first move, and attacking while running does not stop it. */
@@ -506,6 +518,11 @@ static void refresh_gamepads(void) {
     for (int i = 0; i < CONTROLLER_BUTTONS; i++) if (controllerModes[i] != CONTROLLER_HOLD) held &= ~(1ULL << i);
     next.buttons |= controller_map_apply(controllerMap, held) | synthetic;
     pthread_mutex_lock(&gamepadLock);
+    int chord = settingsShortcutEnabled && (physical & SETTINGS_CHORD) == SETTINGS_CHORD;
+    if (chord && !settingsShortcutDown) { settingsChordSince = now; settingsChordFired = 0; }   /* the game keeps it until the second is up */
+    settingsShortcutDown = chord;
+    textEdges |= (physical & 0x1ffffu) & ~textPad.buttons;
+    textPad = next; textPad.buttons = physical & 0x1ffffu;
     pressedEdges |= next.buttons & ~gamepadState.buttons;
     gamepadState = next;
     gamepadRawLeftAt = rawAt;
@@ -588,7 +605,8 @@ void runtime_gamepad_clear(void) {
     gamepadState = (RuntimeGamepadState){0};
     gamepadRawLeftAt = 0;
     gamepadNativeLx = gamepadNativeLy = 0;
-    pressedEdges = 0;
+    pressedEdges = 0; textEdges = 0; textPad = (RuntimeGamepadState){0};
+    settingsShortcutDown = settingsShortcutPending = 0;
     mouse_look_reset(&mouseLook); mouseRX = mouseRY = 0;
     pthread_mutex_unlock(&gamepadLock);
 }
@@ -604,6 +622,48 @@ void runtime_touch_pad_set(const RuntimeGamepadState *s) {
     pthread_mutex_unlock(&gamepadLock);
 }
 
+void runtime_gamepad_settings_enable(int enabled) {
+    pthread_mutex_lock(&gamepadLock);
+    settingsShortcutEnabled = !!enabled;
+    settingsShortcutPending = 0;
+    settingsShortcutDown = (textPad.buttons & SETTINGS_CHORD) == SETTINGS_CHORD;
+    settingsChordSince = runtime_now_ns(); settingsChordFired = 0;   /* a chord held through this counts from now */
+    pthread_mutex_unlock(&gamepadLock);
+}
+int runtime_gamepad_settings_requested(void) {
+    pthread_mutex_lock(&gamepadLock);
+    int requested = settingsShortcutPending; settingsShortcutPending = 0;
+    uint64_t now = runtime_now_ns();
+    if (settingsShortcutEnabled && settingsShortcutDown && !settingsChordFired && now >= settingsChordSince && now - settingsChordSince >= SETTINGS_HOLD_NS) {
+        settingsChordFired = requested = 1;
+        if (!textCapture) textCapture = 2;   /* from here the game no longer gets the chord, until it is released */
+    }
+    pthread_mutex_unlock(&gamepadLock);
+    return requested;
+}
+void runtime_gamepad_text_capture(int on) {
+    pthread_mutex_lock(&gamepadLock);
+    textCapture = on ? 1 : 2;
+    textEdges = pressedEdges = 0;
+    pthread_mutex_unlock(&gamepadLock);
+    /* UI actions must not start persistent gameplay tap/toggle bindings. */
+    memset(tapUntil, 0, sizeof tapUntil); memset(toggleOn, 0, sizeof toggleOn);
+    memset(toggleMoved, 0, sizeof toggleMoved);
+    refresh_gamepads();
+}
+/* Keep the Switch HID fallback's expiry identical for the UI and the game. gamepadLock held. */
+static RuntimeGamepadState text_state_locked(void) {
+    RuntimeGamepadState state = textPad;
+    if (gamepadRawLeftAt && runtime_now_ns() - gamepadRawLeftAt > 250000000ULL) {
+        state.lx = gamepadNativeLx; state.ly = gamepadNativeLy;
+    }
+    return state;
+}
+void runtime_gamepad_text_read(RuntimeGamepadState *out) {
+    pthread_mutex_lock(&gamepadLock);
+    *out = text_state_locked(); out->buttons |= textEdges; textEdges = 0;
+    pthread_mutex_unlock(&gamepadLock);
+}
 void runtime_gamepad_read(RuntimeGamepadState *out) {
     pthread_mutex_lock(&gamepadLock);
     *out = gamepadState;
@@ -616,5 +676,11 @@ void runtime_gamepad_read(RuntimeGamepadState *out) {
     out->rx = stronger_axis(out->rx, mouseRX); out->ry = stronger_axis(out->ry, mouseRY);
     if (touchState.connected) out->connected = 1;
     pressedEdges = 0;
+    if (textCapture) {
+        RuntimeGamepadState held = text_state_locked();
+        if (textCapture == 2 && !held.buttons && !held.lx && !held.ly && !held.rx && !held.ry)
+            textCapture = 0;
+        *out = (RuntimeGamepadState){.connected = out->connected};
+    }
     pthread_mutex_unlock(&gamepadLock);
 }
