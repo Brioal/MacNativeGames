@@ -161,7 +161,13 @@ static uint64_t gamepad_buttons(GCExtendedGamepad *pad, int by_position) {
     if (pad.dpad.right.isPressed) buttons |= 1ULL << 14;
     if (pad.dpad.down.isPressed) buttons |= 1ULL << 15;
     if ([pad isKindOfClass:GCDualSenseGamepad.class] && ((GCDualSenseGamepad *)pad).touchpadButton.isPressed) buttons |= 1ULL << 16;
-    if ([pad isKindOfClass:GCDualShockGamepad.class] && ((GCDualShockGamepad *)pad).touchpadButton.isPressed) buttons |= 1ULL << 16;
+    if ([pad isKindOfClass:GCDualShockGamepad.class]) {
+        GCDualShockGamepad *dualShock = (GCDualShockGamepad *)pad;
+        if (dualShock.touchpadButton.isPressed) {
+            if (controllerMap[16]) buttons |= 1ULL << 16;  /* an explicit whole-pad mapping keeps the legacy behavior */
+            else buttons |= 1ULL << (dualShock.touchpadPrimary.xAxis.value < 0 ? 22 : 23);
+        }
+    }
     return buttons;
 }
 
