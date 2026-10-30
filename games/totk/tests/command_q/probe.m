@@ -10,6 +10,15 @@ int runtime_fs_save_busy(void){return mode==2||(mode==1&&runtime_now_ns()<200000
 _Noreturn void runtime_fail(const char *message){fprintf(stderr,"FAIL: %s\n",message);exit(1);}
 void runtime_input_key(unsigned code,int down){(void)code;(void)down;}
 void runtime_input_clear(void){}
+static int fixtureBindings[24][2];
+void runtime_bindings_default(int out[24][2]){for(int i=0;i<24;i++)out[i][0]=out[i][1]=-1;}
+void runtime_bindings_get(int out[24][2]){memcpy(out,fixtureBindings,sizeof fixtureBindings);}
+void runtime_bindings_set(const int in[24][2]){memcpy(fixtureBindings,in,sizeof fixtureBindings);}
+#ifndef FRONTEND_REAL_GAMEPAD
+void runtime_mouse_bindings_get(uint16_t map[5],uint8_t modes[5]){memset(map,0,5*sizeof *map);memset(modes,0,5*sizeof *modes);}
+void runtime_mouse_bindings_set(const uint16_t map[5],const uint8_t modes[5]){(void)map;(void)modes;}
+void runtime_mouse_bindings_reset(void){}
+#endif
 #ifndef FRONTEND_REAL_GAMEPAD
 void runtime_gamepad_start(void){}
 #endif

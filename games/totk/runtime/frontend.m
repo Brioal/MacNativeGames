@@ -25,9 +25,16 @@ static int fpsGraphEnabled;
 /* The settings panel (key 1, settings_panel.h): while it is open the game gets no keyboard or mouse input. */
 static int settingsOpen;
 static void settings_show(int open);
+static BOOL bindingsOpen;
+static int bindingAction;
+static int bindings_capture_key(unsigned code);
+static void bindings_show(int open);
+static void bindings_load(void);
 #ifdef GAME_BOTW160
 static int amiiboPanelOpen;
 static void amiibo_panel_show(int open);
+static void front_amiibo_next(void);
+static void front_amiibo_toast(NSString *message);
 #endif
 /* Mouse mode (the settings panel, runtime/gamepad.m): while it is on and the window has the keyboard, the window holds the
    pointer -- moved to the window's centre, detached from the mouse and hidden -- and sends the mouse's buttons and
@@ -146,17 +153,33 @@ static CVReturn vsync_callback(CVDisplayLinkRef link,const CVTimeStamp *now,cons
  if(!settingsOpen&&!textEntryOpen&&e.keyCode==0&&(e.modifierFlags&NSEventModifierFlagOption)){amiibo_panel_show(!amiiboPanelOpen);return;}
  if(amiiboPanelOpen){if(e.keyCode==53)amiibo_panel_show(0);return;}
 #endif
- if(textEntryOpen)return;if(settingsOpen&&e.keyCode!=18){if(e.keyCode==53)settings_show(0);return;}runtime_input_key(e.keyCode,1);}
+ if(textEntryOpen)return;
+#ifdef GAME_BOTW160
+ if(!settingsOpen&&e.keyCode==19&&!(e.modifierFlags&(NSEventModifierFlagCommand|NSEventModifierFlagControl|NSEventModifierFlagOption))){
+  int keys[24][2],conflict=0;runtime_bindings_get(keys);
+  for(int i=0;i<24;i++)for(int j=0;j<2;j++)conflict|=keys[i][j]==19;
+  if(!conflict){if(!e.isARepeat)front_amiibo_next();return;}
+  if(!e.isARepeat)front_amiibo_toast(@(TOTK_UI("按键 2 已绑定游戏操作，请在键位设置中解除","Key 2 is bound to a game action; clear it in Key bindings")));
+ }
+#endif
+ if(settingsOpen&&bindingsOpen){if(bindingAction>=0){bindings_capture_key(e.keyCode);return;}
+  if(e.keyCode==53){bindings_show(0);return;}if(e.keyCode!=18)return;}
+ if(settingsOpen&&e.keyCode!=18){if(e.keyCode==53)settings_show(0);return;}runtime_input_key(e.keyCode,1);}
 -(void)keyUp:(NSEvent *)e{
 #ifdef GAME_BOTW160
  if(amiiboPanelOpen)return;
 #endif
  runtime_input_key(e.keyCode,0);}
--(void)flagsChanged:(NSEvent *)e{int shift=!!(e.modifierFlags&NSEventModifierFlagShift),option=!!(e.modifierFlags&NSEventModifierFlagOption);
+-(void)flagsChanged:(NSEvent *)e{
 #ifdef GAME_BOTW160
  if(amiiboPanelOpen)return;
 #endif
- if(e.keyCode==56&&(!(settingsOpen||textEntryOpen)||!shift))runtime_input_key(56,shift);if(e.keyCode==58&&(!(settingsOpen||textEntryOpen)||!option))runtime_input_key(58,option);}
+ unsigned code=e.keyCode;
+ if(code!=56&&code!=60&&code!=58&&code!=61&&code!=59&&code!=62)return;
+ int down=CGEventSourceKeyState(kCGEventSourceStateCombinedSessionState,(CGKeyCode)code);
+ if(settingsOpen&&bindingsOpen&&bindingAction>=0){if(down)bindings_capture_key(code);return;}
+ if(!(settingsOpen||textEntryOpen)||!down)runtime_input_key(code,down);
+}
 /* The game has no mouse controls. In native full screen, keep the pointer out of the picture while idle, but show it again
    as soon as it moves; restore it when the window loses focus or leaves full screen. */
 -(void)hideCursorIfIdle:(NSTimer *)timer{
@@ -366,7 +389,15 @@ enum { FPS_GRAPH_SAMPLES = 61, FPS_GRAPH_WIDTH = 220, FPS_GRAPH_HEIGHT = 90 };
  if(points==1)[[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(last.x-1,last.y-1,2,2)] fill];
 }
 @end
+#include "key_bindings_panel.h"
 #include "settings_panel.h"
+static void bindings_show(int open){
+ open=!!open;if(open==bindingsOpen)return;
+ bindingAction=-1;bindingsOpen=open;
+ if(open){bindingsScrollY=-1;settingsPanel.hidden=YES;bindings_refresh();}
+ else{[bindingsPanel removeFromSuperview];bindingsPanel=nil;bindingsScroll=nil;settingsPanel.hidden=NO;[window makeFirstResponder:window.contentView];}
+}
+
 /* The live FPS in the menu bar: a menu of the game's own, after its app menu on the left, whose title is the frame rate
    ("60 FPS", "50+50 FPS" while frame interpolation shows generated frames), refreshed twice a second with the value the
    overlay uses. Part of the app's own menu bar, so macOS shows it whenever the game is in front (a status item next to
@@ -566,6 +597,7 @@ static void front_amiibo_record_scan(void) {
 -(void)simulateAmiiboScan:(id)sender;
 -(void)scanAmiiboURL:(NSURL *)url;
 -(BOOL)loadAmiiboURL:(NSURL *)url;
+-(BOOL)parseAmiiboURL:(NSURL *)url into:(RuntimeVirtualAmiibo *)out error:(NSString **)outProblem;
 @end
 @implementation BOTWAmiiboMenuTarget
 -(void)chooseAmiibo:(id)sender{
@@ -588,7 +620,7 @@ static void front_amiibo_record_scan(void) {
  [[NSUserDefaults standardUserDefaults] setObject:panel.URL.path forKey:@"BOTWAmiiboFolder"];
  [amiiboPanel refreshFiles];
 }
--(BOOL)loadAmiiboURL:(NSURL *)url{
+-(BOOL)parseAmiiboURL:(NSURL *)url into:(RuntimeVirtualAmiibo *)out error:(NSString **)outProblem{
  NSError *error=nil;NSData *data=[NSData dataWithContentsOfURL:url options:NSDataReadingMappedIfSafe error:&error];
  BOOL isJSON=[[url.pathExtension lowercaseString] isEqualToString:@"json"];
  id parsed=data&&isJSON?[NSJSONSerialization JSONObjectWithData:data options:0 error:&error]:nil;
@@ -634,25 +666,88 @@ static void front_amiibo_record_scan(void) {
   if(!problem&&!front_amiibo_read_uint(json[@"write_counter"],UINT16_MAX,&field))problem=@"write_counter 无效";else if(!problem)amiibo.write_counter=(uint16_t)field;
   if(!problem&&!front_amiibo_read_uint(json[@"version"],UINT16_MAX,&field))problem=@"version 无效";else if(!problem)amiibo.version=(uint16_t)field;
  }
- if(problem){
+ if(!problem&&!name.length)problem=@(TOTK_UI("文件名为空","The file name is empty"));
+ if(problem){if(outProblem)*outProblem=problem;return NO;}
+ NSString *shortName=[name substringToIndex:MIN((NSUInteger)10,name.length)];
+ snprintf(amiibo.name,sizeof amiibo.name,"%s",shortName.UTF8String);
+ *out=amiibo;return YES;
+}
+-(BOOL)loadAmiiboURL:(NSURL *)url{
+ RuntimeVirtualAmiibo amiibo={0};NSString *problem=nil;
+ if(![self parseAmiiboURL:url into:&amiibo error:&problem]){
   NSAlert *alert=[NSAlert new];alert.messageText=@(TOTK_UI("无法加载 Amiibo","Could not load Amiibo"));alert.informativeText=problem;
   [alert addButtonWithTitle:@(TOTK_UI("好","OK"))];[alert runModal];return NO;
  }
- if(!name.length){NSAlert *alert=[NSAlert new];alert.messageText=@(TOTK_UI("无法加载 Amiibo","Could not load Amiibo"));alert.informativeText=@(TOTK_UI("文件名为空","The file name is empty"));[alert addButtonWithTitle:@(TOTK_UI("好","OK"))];[alert runModal];return NO;}
- NSString *shortName=[name substringToIndex:MIN((NSUInteger)10,name.length)];
- snprintf(amiibo.name,sizeof amiibo.name,"%s",shortName.UTF8String);
- runtime_nfp_set_virtual_amiibo(&amiibo);
+ if(!runtime_nfp_try_select(&amiibo)){front_amiibo_toast(@(TOTK_UI("上一张 Amiibo 仍在处理，请稍后","Previous Amiibo is still being processed")));return NO;}
  amiiboCurrentID=front_amiibo_identifier(&amiibo);amiiboCurrentURL=url;
- fprintf(stderr,"[botw] virtual Amiibo %s loaded\n",isJSON?"metadata":"raw dump");
- return YES;
+ fprintf(stderr,"[botw] virtual Amiibo loaded\n");return YES;
 }
 -(void)simulateAmiiboScan:(id)sender{
  (void)sender;if(!amiiboCurrentID)return;
- runtime_nfp_request_scan();front_amiibo_record_scan();
+ if(!runtime_nfp_try_scan(NULL)){front_amiibo_toast(@(TOTK_UI("上一张 Amiibo 仍在处理，请稍后","Previous Amiibo is still being processed")));return;}
+ front_amiibo_record_scan();
  fprintf(stderr,"[botw] virtual Amiibo scan requested: today=%ld total=%ld\n",(long)front_amiibo_today_count(amiiboCurrentID),(long)front_amiibo_total_count(amiiboCurrentID));
 }
--(void)scanAmiiboURL:(NSURL *)url{if([self loadAmiiboURL:url])[self simulateAmiiboScan:nil];}
+-(void)scanAmiiboURL:(NSURL *)url{
+ RuntimeVirtualAmiibo amiibo={0};NSString *problem=nil;
+ if(![self parseAmiiboURL:url into:&amiibo error:&problem]){
+  NSAlert *alert=[NSAlert new];alert.messageText=@(TOTK_UI("无法加载 Amiibo","Could not load Amiibo"));alert.informativeText=problem;
+  [alert addButtonWithTitle:@(TOTK_UI("好","OK"))];[alert runModal];return;
+ }
+ if(!runtime_nfp_try_scan(&amiibo)){front_amiibo_toast(@(TOTK_UI("上一张 Amiibo 仍在处理，请稍后","Previous Amiibo is still being processed")));return;}
+ amiiboCurrentID=front_amiibo_identifier(&amiibo);amiiboCurrentURL=url;front_amiibo_record_scan();
+}
+
 @end
+/* A temporary, non-interactive label in the game window. */
+@interface BOTWAmiiboToast:NSView
+@end
+@implementation BOTWAmiiboToast
+-(NSView *)hitTest:(NSPoint)point{(void)point;return nil;}
+@end
+static NSView *amiiboToast;
+static void front_amiibo_toast(NSString *message){
+ if(!window)return;
+ [amiiboToast removeFromSuperview];
+ CGFloat w=fmin(520,window.contentView.bounds.size.width-24),h=38;
+ BOTWAmiiboToast *box=[[BOTWAmiiboToast alloc] initWithFrame:NSMakeRect((window.contentView.bounds.size.width-w)/2,window.contentView.bounds.size.height-h-18,w,h)];
+ box.autoresizingMask=NSViewMinXMargin|NSViewMaxXMargin|NSViewMinYMargin;box.wantsLayer=YES;
+ box.layer.backgroundColor=[NSColor colorWithCalibratedWhite:0 alpha:.82].CGColor;box.layer.cornerRadius=8;
+ NSTextField *label=[NSTextField labelWithString:message];label.frame=NSMakeRect(12,9,w-24,22);
+ label.textColor=NSColor.whiteColor;label.alignment=NSTextAlignmentCenter;label.lineBreakMode=NSLineBreakByTruncatingMiddle;
+ [box addSubview:label];[window.contentView addSubview:box];amiiboToast=box;
+ dispatch_after(dispatch_time(DISPATCH_TIME_NOW,3*NSEC_PER_SEC),dispatch_get_main_queue(),^{if(amiiboToast==box){[box removeFromSuperview];amiiboToast=nil;}});
+}
+static void front_amiibo_next(void){
+ NSUserDefaults *defaults=NSUserDefaults.standardUserDefaults;
+ NSString *folder=[defaults stringForKey:@"BOTWAmiiboFolder"];
+ if(!folder.length){front_amiibo_toast(@(TOTK_UI("请先在 1 菜单中选择 Amiibo 文件夹","Choose an Amiibo folder from the 1 menu first")));return;}
+ NSError *error=nil;NSArray<NSURL *> *urls=front_amiibo_files(folder,&error);
+ if(!urls){front_amiibo_toast([NSString stringWithFormat:@(TOTK_UI("无法读取 Amiibo 文件夹：%@","Cannot read Amiibo folder: %@")),error.localizedDescription]);return;}
+ NSMutableArray<NSURL *> *files=[NSMutableArray array];
+ for(NSURL *url in urls)if([@[@"bin",@"json"] containsObject:url.pathExtension.lowercaseString])[files addObject:url];
+ if(!files.count){front_amiibo_toast(@(TOTK_UI("Amiibo 文件夹中没有可扫描的文件","No Amiibo files in the folder")));return;}
+ NSString *lastFolder=[defaults stringForKey:@"BOTWAmiiboSequenceFolder"],*last=[defaults stringForKey:@"BOTWAmiiboSequenceLast"];
+ NSUInteger start=0;
+ if([lastFolder isEqualToString:folder]&&last){
+  for(NSUInteger i=0;i<files.count;i++)if([files[i].lastPathComponent isEqualToString:last]){start=(i+1)%files.count;break;}
+ }
+ if(!amiiboMenuTarget)amiiboMenuTarget=[BOTWAmiiboMenuTarget new];
+ for(NSUInteger skipped=0;skipped<files.count;skipped++){
+  NSUInteger i=(start+skipped)%files.count;NSURL *url=files[i];RuntimeVirtualAmiibo amiibo={0};NSString *problem=nil;
+  if(![amiiboMenuTarget parseAmiiboURL:url into:&amiibo error:&problem]){
+   fprintf(stderr,"[botw] skipping invalid Amiibo %s: %s\n",url.lastPathComponent.UTF8String,problem.UTF8String);continue;
+  }
+  if(!runtime_nfp_try_scan(&amiibo)){front_amiibo_toast(@(TOTK_UI("上一张 Amiibo 仍在处理，请稍后再按 2","Previous Amiibo is still being processed; try 2 again")));return;}
+  amiiboCurrentID=front_amiibo_identifier(&amiibo);amiiboCurrentURL=url;
+  [defaults setObject:folder forKey:@"BOTWAmiiboSequenceFolder"];[defaults setObject:url.lastPathComponent forKey:@"BOTWAmiiboSequenceLast"];
+  front_amiibo_record_scan();
+  NSString *message=[NSString stringWithFormat:@(TOTK_UI("已请求扫描：%@（%lu/%lu）","Scan requested: %@ (%lu/%lu)")),url.lastPathComponent,(unsigned long)i+1,(unsigned long)files.count];
+  if(skipped)message=[message stringByAppendingFormat:@(TOTK_UI(" · 跳过 %lu 个无效文件"," · skipped %lu invalid files")),(unsigned long)skipped];
+  front_amiibo_toast(message);return;
+ }
+ front_amiibo_toast(@(TOTK_UI("没有可用的 Amiibo 文件，请检查文件夹","No valid Amiibo files; check the folder")));
+}
 @implementation BOTWAmiiboPanel
 -(instancetype)init{
  CGFloat w=620,h=fmin(540,window.contentView.bounds.size.height-32);
@@ -762,6 +857,7 @@ void runtime_front_run(void(*callback)(void)){
   [NSApplication sharedApplication];[NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
   runtime_mouse_set_hook(front_mouse_update);
   runtime_gamepad_start();
+  bindings_load();
   /* Default window: the docked output size, 1920x1080, scaled down (16:9 kept) when the screen's visible area is smaller. */
   /* TOTK_WINDOW_SIZE=<w>x<h> (test scripts only, e.g. the 2K output test; the desktop launcher never sets it): another starting size. */
   NSRect vis=NSScreen.mainScreen?NSScreen.mainScreen.visibleFrame:NSMakeRect(0,0,1920,1080+28);CGFloat ww=1920,wh=1080;

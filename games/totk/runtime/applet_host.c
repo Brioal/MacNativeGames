@@ -133,6 +133,30 @@ void runtime_nfp_request_scan(void) {
     pthread_mutex_unlock(&nfp_lock);
     if (activate) hle_signal_system_event(activate);
 }
+/* Select and optionally scan under one lock so rapid shortcuts cannot replace a pending or mounted tag. */
+static int nfp_try(const RuntimeVirtualAmiibo *amiibo, int scan) {
+    void *availability = NULL, *activate = NULL;
+    pthread_mutex_lock(&nfp_lock);
+    if (nfp_scan_pending || nfp_status >= 2 || (!amiibo && !nfp_selected)) {
+        pthread_mutex_unlock(&nfp_lock); return 0;
+    }
+    if (amiibo) {
+        nfp_amiibo = *amiibo; nfp_selected = 1; nfp_status = nfp_detecting ? 1 : 0;
+        nfp_activate_pending = 0; availability = nfp_availability_event;
+        nfp_availability_pending = availability == NULL;
+    }
+    if (scan) {
+        if (nfp_detecting) {
+            nfp_status = 2; activate = nfp_activate_event; nfp_activate_pending = activate == NULL;
+        } else nfp_scan_pending = 1;
+    }
+    pthread_mutex_unlock(&nfp_lock);
+    if (availability) hle_signal_system_event(availability);
+    if (activate) hle_signal_system_event(activate);
+    return 1;
+}
+int runtime_nfp_try_select(const RuntimeVirtualAmiibo *amiibo) { return nfp_try(amiibo, 0); }
+int runtime_nfp_try_scan(const RuntimeVirtualAmiibo *amiibo) { return nfp_try(amiibo, 1); }
 static unsigned nfp_list(void *handles, int *count, int max) {
     pthread_mutex_lock(&nfp_lock);
     int selected = nfp_selected;
@@ -311,6 +335,8 @@ static unsigned nfp_get_register_info(void *out, const void *handle) {
 }
 #else
 void runtime_nfp_set_virtual_amiibo(const RuntimeVirtualAmiibo *amiibo) { (void)amiibo; }
+int runtime_nfp_try_select(const RuntimeVirtualAmiibo *amiibo) { (void)amiibo; return 0; }
+int runtime_nfp_try_scan(const RuntimeVirtualAmiibo *amiibo) { (void)amiibo; return 0; }
 void runtime_nfp_request_scan(void) {}
 static unsigned nfp_list(void *handles, int *count, int max) { (void)handles; (void)max; if (count) *count = 0; return NFP_DEVICE_NOT_FOUND; }
 static unsigned nfp_attach_availability(void *event) { if (!event) runtime_fail("nfp availability event"); hle_bind_system_event(event, 0); return 0; }

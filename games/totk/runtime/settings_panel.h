@@ -222,7 +222,7 @@ enum { SETTINGS_W = 520, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 5
     screen), so its title, close button and first rows stay in view. */
  CGFloat n=rows.count,rowH=SETTINGS_ROW_H,gap=SETTINGS_GAP,room=window?window.contentView.bounds.size.height-8:CGFLOAT_MAX,bottom=SETTINGS_BOTTOM;
 #ifdef GAME_BOTW160
- bottom=124;  /* room for the BotW-only Amiibo entry above the existing footer buttons */
+ bottom=124;  /* the Amiibo and bindings buttons share a row */
 #endif
  if(n&&SETTINGS_TOP+n*(rowH+gap)-gap+bottom>room){gap=2;rowH=fmax(24,floor((room-SETTINGS_TOP-bottom+gap)/n-gap));}
  CGFloat h=SETTINGS_TOP+n*(rowH+gap)-gap+bottom;
@@ -236,8 +236,8 @@ enum { SETTINGS_W = 520, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 5
  NSButton *close=[NSButton buttonWithTitle:@"✕" target:self action:@selector(close:)];close.bordered=NO;close.refusesFirstResponder=YES;
  close.font=[NSFont systemFontOfSize:15 weight:NSFontWeightBold];close.contentTintColor=NSColor.whiteColor;close.frame=NSMakeRect(SETTINGS_W-40,h-40,28,28);[self addSubview:close];
 #ifdef GAME_BOTW160
- NSButton *amiibo=[NSButton buttonWithTitle:settings_text("虚拟 Amiibo","Virtual Amiibo") target:self action:@selector(openAmiibo:)];
- amiibo.frame=NSMakeRect(14,76,SETTINGS_W-28,30);amiibo.refusesFirstResponder=YES;[self addSubview:amiibo];
+ NSButton *amiibo=[NSButton buttonWithTitle:settings_text("虚拟 Amiibo（2：下一张）","Amiibo (2: next)") target:self action:@selector(openAmiibo:)];
+ amiibo.frame=NSMakeRect(SETTINGS_W/2+5,76,(SETTINGS_W-38)/2,30);amiibo.refusesFirstResponder=YES;[self addSubview:amiibo];
 #endif
  for(NSUInteger i=0;i<rows.count;i++){
   TOTKSettingRow *r=rows[i];CGFloat y=h-SETTINGS_TOP-(i+1)*rowH-i*gap,rw=SETTINGS_W-28;
@@ -250,11 +250,22 @@ enum { SETTINGS_W = 520, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 5
    p.enabled=r.set!=nil;r.control=p;}
   r.control.refusesFirstResponder=YES;r.control.target=r;r.control.action=@selector(changed:);[band addSubview:r.control];[self.controllerTargets addObject:band];
  }
- CGFloat bw=(SETTINGS_W-28-10)/2;
+ NSButton *bindings=[NSButton buttonWithTitle:settings_text("键位设置","Key bindings") target:self action:@selector(openBindings:)];
+#ifdef GAME_BOTW160
+ bindings.frame=NSMakeRect(14,76,(SETTINGS_W-38)/2,30);
+#else
+ bindings.frame=NSMakeRect(14,40,(SETTINGS_W-48)/3,30);
+#endif
+ bindings.refusesFirstResponder=YES;[self addSubview:bindings];[self.controllerTargets addObject:bindings];
+#ifdef GAME_BOTW160
+ CGFloat bw=(SETTINGS_W-28-10)/2,contribX=14,starX=14+bw+10;
+#else
+ CGFloat bw=(SETTINGS_W-48)/3,contribX=14+bw+10,starX=14+2*(bw+10);
+#endif
  NSButton *contrib=[NSButton buttonWithTitle:settings_text("贡献着色器和管线","Contribute shaders and pipelines") target:self action:@selector(contribute:)];
- contrib.frame=NSMakeRect(14,40,bw,30);contrib.refusesFirstResponder=YES;[self addSubview:contrib];[self.controllerTargets addObject:contrib];
+ contrib.frame=NSMakeRect(contribX,40,bw,30);contrib.refusesFirstResponder=YES;[self addSubview:contrib];[self.controllerTargets addObject:contrib];
  NSButton *star=[NSButton buttonWithTitle:settings_text("⭐ 给作者点赞","⭐ Star the project") target:self action:@selector(star:)];
- star.frame=NSMakeRect(14+bw+10,40,bw,30);star.refusesFirstResponder=YES;[self addSubview:star];[self.controllerTargets addObject:star];
+ star.frame=NSMakeRect(starX,40,bw,30);star.refusesFirstResponder=YES;[self addSubview:star];[self.controllerTargets addObject:star];
  NSTextField *hint=[NSTextField labelWithString:settings_text("按 1 或 Esc 关闭 · 打开时键盘和鼠标不会传给游戏","1 or Esc closes it · keyboard and mouse do not reach the game while it is open")];
  hint.font=[NSFont systemFontOfSize:11];hint.textColor=[NSColor colorWithCalibratedWhite:0.7 alpha:1];hint.alignment=NSTextAlignmentCenter;
  hint.lineBreakMode=NSLineBreakByTruncatingMiddle;hint.frame=NSMakeRect(10,5,SETTINGS_W-20,32);hint.maximumNumberOfLines=2;[self addSubview:hint];self.hint=hint;
@@ -323,6 +334,7 @@ enum { SETTINGS_W = 520, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 5
  if(edges&(type==GAMEPAD_TYPE_SWITCH?2u:1u))[self controllerChange:1 select:YES];
 }
 -(void)close:(id)sender{(void)sender;settings_show(0);}
+-(void)openBindings:(id)sender{(void)sender;bindings_show(1);}
 #ifdef GAME_BOTW160
 -(void)openAmiibo:(id)sender{(void)sender;settings_show(0);amiibo_panel_show(1);}
 #endif
@@ -368,6 +380,7 @@ static void settings_show(int open) {   /* main thread */
  if(!window||open==settingsOpen||(open&&textEntryOpen))return;
  /* Made again at every opening: what the game offers (aspect ratio, resolution) is known only once its code is in. */
  if(open){[settingsPanel.timer invalidate];[settingsPanel removeFromSuperview];settingsPanel=[TOTKSettingsPanel new];[window.contentView addSubview:settingsPanel];}
+ if(!open&&bindingsOpen)bindings_show(0);
  settingsOpen=open;
  runtime_gamepad_text_capture(open);
  if(open){runtime_input_clear();[settingsPanel center];[settingsPanel refresh];[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];}
@@ -389,7 +402,7 @@ static void settings_controller_tick(RuntimeGamepadState pad,BOOL requested,BOOL
  }
  if(!settingsControllerReady){if(!pad.buttons&&!pad.lx&&!pad.ly)settingsControllerReady=YES;return;}
  if(requested){settings_show(!settingsOpen);return;}
- if(settingsOpen)[settingsPanel controllerPad:pad time:now active:YES];
+ if(settingsOpen&&!bindingsOpen)[settingsPanel controllerPad:pad time:now active:YES];
 }
 static void settings_controller_start(void){
  if(settingsControllerTimer)return;

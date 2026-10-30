@@ -61,6 +61,8 @@ typedef struct {
 } RuntimeVirtualAmiibo;
 void runtime_nfp_set_virtual_amiibo(const RuntimeVirtualAmiibo *amiibo);
 void runtime_nfp_request_scan(void);
+int runtime_nfp_try_select(const RuntimeVirtualAmiibo *amiibo);
+int runtime_nfp_try_scan(const RuntimeVirtualAmiibo *amiibo); /* NULL scans the selected tag; 0 means busy or no tag */
 void runtime_spin_wait(unsigned module, uint64_t head);   // threads.c: a pass of a gated spin wait (loader.c runtime_dispatch)
 void runtime_save_probe(void);
 int runtime_fs_save_busy(void);   /* runtime/fs_host.c: the game is writing save data (window close waits) */
@@ -148,6 +150,12 @@ void runtime_vpool_probe(void);
 void runtime_memory_probe(void);
 
 void runtime_input_key(unsigned code,int down);
+void runtime_bindings_default(int out[24][2]);
+void runtime_bindings_get(int out[24][2]);
+void runtime_bindings_set(const int in[24][2]);
+void runtime_mouse_bindings_get(uint16_t map[5],uint8_t modes[5]);
+void runtime_mouse_bindings_set(const uint16_t map[5],const uint8_t modes[5]);
+void runtime_mouse_bindings_reset(void);
 void runtime_input_clear(void);
 int runtime_handheld_mode(void);   /* TOTK_OPERATION_MODE=handheld (runtime/services.c) */
 void *runtime_input_override(const char *name);

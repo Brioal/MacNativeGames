@@ -93,3 +93,7 @@ mouse_middle = zl
 ## 按键图标
 
 `python3.14 games/totk/scripts/make_button_icons.py <模组文件夹> --app <Tears of the Kingdom.app> --style keyboard`（或 `--style xbox`）生成一个模组，把游戏按键提示里的 Switch 图标换成 Mac 键盘按键（A B X Y 对应 J K I U、W A S D、方向键等）或 Xbox 按键（按 Switch 位置排列的 B A Y X、LB/RB、LT/RT、Menu/View）。它用你自己的 RomFS 重绘每种语言字体包里的图标字体（项目里不含任何游戏内容），所以每种游戏语言（包括韩语和中文）都会换成新图标，并写好 manifest，同时把游戏的资源大小表调大以容纳变大的字体（不调的话游戏启动时就会停止）；文件夹里已有的文件会保留。用旧版脚本生成的模组只覆盖其他语言，请加 `--replace` 重新生成。需要 Python 3.14 和 `python3.14 -m pip install fonttools`。文件夹里已有字体包（别的模组的，或者上次生成的）时会停下，加 `--replace` 才覆盖，换风格也要加它。Xbox 图标对应默认的按位置映射；设了 `TOTK_FACE_BUTTONS=label` 或在 `controls.txt` 里改过面键时会对不上。删除模组里的 `Font` 文件夹和 `System/Resource/ResourceSizeTable.*` 后运行 `make_mod_manifest.py` 即可恢复。以固定图片显示的提示（部分教程动画）仍是 Switch 图标。
+
+**键位设置：** 按 1 打开设置，点击「键位设置」查看或调整键盘、鼠标按键和拉弓射击联动。点击键位后按新键，× 清除绑定；按键 1 留给设置面板。修改立即生效，配置保存在游戏数据目录的 `keyboard-mouse.json`；恢复默认会清除该配置，并让鼠标重新遵循 `controls.txt`。游戏内提示图标不会随之改变。
+
+**Amiibo 快捷扫描（旷野之息 1.6.0）：** 在虚拟 Amiibo 面板中选择文件夹后，在游戏中切换到 Amiibo 功能，每按一次 2 请求扫描下一张。提示显示文件和进度；处理尚未结束时请稍后再按。游戏决定每日使用限制，列表次数记录扫描请求。2 不能新绑定给游戏；已有冲突需在键位设置里清除。

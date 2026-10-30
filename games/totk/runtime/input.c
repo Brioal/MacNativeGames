@@ -14,8 +14,17 @@ static pthread_mutex_t inputLock=PTHREAD_MUTEX_INITIALIZER;
 static unsigned char keys[128];static uint64_t pending;
 static uint32_t styles=1;static bool enabled,allowed=true;static int holdType;
 static int64_t sample;static uint64_t padSeen;
-/* F/T/H/G map the D-pad left/up/right/down, keeping both analog-stick mappings independent. */
-static uint64_t button(unsigned code){switch(code){case 38:return 1;case 40:case 49:return 2;case 34:return 4;case 32:return 8;case 6:return 16;case 8:return 32;case 12:return 64;case 14:return 128;case 58:return 256;case 56:return 512;case 36:return 1024;case 48:case 53:return 2048;case 3:return 4096;case 17:return 8192;case 4:return 16384;case 5:return 32768;default:return 0;}}
+/* Switch buttons followed by left/right stick directions (left, right, down, up). */
+#define BINDING_DEFAULTS {{38,-1},{40,49},{34,-1},{32,-1},{6,-1},{8,-1},{12,-1},{14,-1},{58,-1},{56,-1},{36,-1},{48,53},{3,-1},{17,-1},{4,-1},{5,-1},{0,-1},{2,-1},{1,-1},{13,-1},{123,-1},{124,-1},{125,-1},{126,-1}}
+static const int defaultBindings[24][2]=BINDING_DEFAULTS;
+static int keyBindings[24][2]=BINDING_DEFAULTS;
+void runtime_bindings_default(int out[24][2]){memcpy(out,defaultBindings,sizeof defaultBindings);}
+void runtime_bindings_get(int out[24][2]){pthread_mutex_lock(&inputLock);memcpy(out,keyBindings,sizeof keyBindings);pthread_mutex_unlock(&inputLock);}
+void runtime_bindings_set(const int in[24][2]){
+ pthread_mutex_lock(&inputLock);memcpy(keyBindings,in,sizeof keyBindings);memset(keys,0,sizeof keys);pending=0;pthread_mutex_unlock(&inputLock);
+}
+static int binding_down(unsigned action){for(int j=0;j<2;j++){int k=keyBindings[action][j];if(k>=0&&keys[k])return 1;}return 0;}
+static uint64_t button(unsigned code){uint64_t b=0;for(unsigned i=0;i<16;i++)for(int j=0;j<2;j++)if(keyBindings[i][j]==(int)code)b|=1ULL<<i;return b;}
 /* Real user input (a window key, a controller button, a stick pushed past half) stops TOTK_AUTOLOAD and is logged at most
    once a minute. In an agent's test session (TOTK_SLOT_OWNER other than user) the line says the user is playing it: its
    save is a copy, its scripted measurement is void, and its script must not close the game under the user
@@ -55,8 +64,8 @@ static int pad_states(NpadState *out,int max,const uint32_t *id,uint32_t want_st
 static int full_states(NpadState *out,int max,const uint32_t *id){return pad_states(out,max,id,1);}
 static int handheld_states(NpadState *out,int max,const uint32_t *id){return pad_states(out,max,id,2);}
 static int pad_states(NpadState *out,int max,const uint32_t *id,uint32_t want_style){if(max<=0)return 0;if(id)input_log(want_style==2?"handheld state":"full-key state",*id);if(!out||!id)runtime_fail("controller output pointer");pthread_mutex_lock(&inputLock);NpadState state={.sampling=++sample};if(enabled&&allowed&&*id==pad_id()&&want_style==pad_style()&&(styles&want_style)){
- state.attributes=1;for(unsigned i=0;i<128;i++)if(keys[i])state.buttons|=button(i);state.buttons|=pending;pending=0;
- state.lx=32767*((int)keys[2]-(int)keys[0]);state.ly=32767*((int)keys[13]-(int)keys[1]);state.rx=32767*((int)keys[124]-(int)keys[123]);state.ry=32767*((int)keys[126]-(int)keys[125]);
+ state.attributes=1;for(unsigned i=0;i<16;i++)if(binding_down(i))state.buttons|=1ULL<<i;state.buttons|=pending;pending=0;
+ state.lx=32767*(binding_down(17)-binding_down(16));state.ly=32767*(binding_down(19)-binding_down(18));state.rx=32767*(binding_down(21)-binding_down(20));state.ry=32767*(binding_down(23)-binding_down(22));
  RuntimeGamepadState pad;runtime_gamepad_read(&pad);state.buttons|=pad.buttons;
  if(pad.buttons&~padSeen||abs(pad.lx)>16384||abs(pad.ly)>16384||abs(pad.rx)>16384||abs(pad.ry)>16384)user_input("controller");padSeen=pad.buttons;
  if(abs(pad.lx)>abs(state.lx))state.lx=pad.lx;if(abs(pad.ly)>abs(state.ly))state.ly=pad.ly;

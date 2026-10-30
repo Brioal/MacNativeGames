@@ -72,6 +72,18 @@ static void load_controller_map(void) {
     fprintf(stderr, "[totk-input] controller layout: %s (%d buttons changed)\n", path, changed);
 }
 
+/* Mouse overrides are separate from controls.txt; all calls are on the main thread. */
+void runtime_mouse_bindings_get(uint16_t map[5],uint8_t modes[5]) {
+    memcpy(map,controllerMap+CONTROLLER_MOUSE_FIRST,5*sizeof *map);
+    memcpy(modes,controllerModes+CONTROLLER_MOUSE_FIRST,5*sizeof *modes);
+}
+void runtime_mouse_bindings_set(const uint16_t map[5],const uint8_t modes[5]) {
+    memcpy(controllerMap+CONTROLLER_MOUSE_FIRST,map,5*sizeof *map);
+    memcpy(controllerModes+CONTROLLER_MOUSE_FIRST,modes,5*sizeof *modes);
+    runtime_mouse_release(); refresh_gamepads();
+}
+void runtime_mouse_bindings_reset(void) { load_controller_map(); runtime_mouse_release(); refresh_gamepads(); }
+
 static int32_t stick_axis(float value) {
     const float deadzone = 0.12f;
     float magnitude = fabsf(value);

@@ -47,7 +47,7 @@ int main(int argc,char **argv){@autoreleasepool{
  mode=0;
  hidPad=(HIDPadState){0};runtime_gamepad_clear();
  settings_controller_tick(pad(0),NO,YES,0);settings_controller_tick(pad(SETTINGS_CHORD),YES,YES,0.1);CHECK(settingsOpen&&textCapture==1);
- CHECK(settingsPanel.controllerTargets.count==settingsPanel.rows.count+2);
+ CHECK(settingsPanel.controllerTargets.count==settingsPanel.rows.count+3);
  /* Replace row setters with test-local values; changes must use each row's original control action. */
  __block int choice=0,toggle=0;
  TOTKSettingRow *r=settingsPanel.rows[0];r.choices=@[@"Off",@"30",@"60"];r.values=@[@0,@30,@60];r.get=^int{return choice;};r.set=^(int v){choice=v;};
@@ -79,6 +79,23 @@ int main(int argc,char **argv){@autoreleasepool{
  settings_controller_tick(pad(SETTINGS_CHORD),YES,YES,7);CHECK(!settingsOpen);
  settings_controller_tick(pad(0),NO,YES,8);settings_controller_tick(pad(SETTINGS_CHORD),YES,YES,9);CHECK(settingsOpen);
  settings_controller_tick(pad(0),NO,YES,10);settings_controller_tick(pad(SETTINGS_CHORD),YES,YES,11);CHECK(!settingsOpen);
+ /* Exercise the bindings view and persistence using an isolated settings folder. */
+ if(settingsOpen)settings_show(0);
+ int bindings[24][2];runtime_bindings_default(bindings);runtime_bindings_set(bindings);
+ controller_map_default(controllerMap,controllerModes);
+ settings_show(1);bindings_show(1);CHECK(bindingsOpen&&settingsPanel.hidden);
+ bindingAction=0;bindingSlot=0;CHECK(bindings_capture_key(7));runtime_bindings_get(bindings);CHECK(bindings[0][0]==7);
+ NSString *config=[@(argv[1]) stringByAppendingPathComponent:@"keyboard-mouse.json"];
+ NSDictionary *saved=[NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:config] options:0 error:nil];
+ CHECK(saved&&saved[@"mouse"]==NSNull.null); /* keyboard edits must not freeze controls.txt mouse settings */
+ controllerMap[CONTROLLER_MOUSE_FIRST]=1u<<1;runtime_bindings_default(bindings);runtime_bindings_set(bindings);
+ bindings_load();runtime_bindings_get(bindings);CHECK(bindings[0][0]==7&&controllerMap[CONTROLLER_MOUSE_FIRST]==(1u<<1));
+ NSPopUpButton *mouse=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(0,0,100,25) pullsDown:NO];
+ [mouse addItemsWithTitles:@[@"none",@"a"]];[mouse selectItemAtIndex:1];mouse.tag=0;
+ [(TOTKBindingsPanel *)bindingsPanel mouseChanged:mouse];CHECK(controllerMap[CONTROLLER_MOUSE_FIRST]==1);
+ saved=[NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:config] options:0 error:nil];CHECK([saved[@"mouse"] isKindOfClass:NSArray.class]);
+ controllerMap[CONTROLLER_MOUSE_FIRST]=0;bindings_load();CHECK(controllerMap[CONTROLLER_MOUSE_FIRST]==1);
+ bindings_show(0);CHECK(!bindingsOpen&&!settingsPanel.hidden);settings_show(0);
  printf("pass: controller settings (%u checks)\n",checks);
  if(argc>2){
   window.title=@"Controller Settings Preview — no game settings changed";
