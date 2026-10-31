@@ -126,11 +126,24 @@ carries on, its code half is in the app, and its data half takes effect once the
 (`--install-mod-romfs`, or by hand). With `--update` the patch is merged into the updated module, which is the one
 the app runs.
 
+### Code patches at launch (`TOTK_PCHTXT`, Mac)
+
+A main `.pchtxt` can also be applied when the game starts, without a build:
+
+```bash
+open --env TOTK_PCHTXT="/path/to/mods.pchtxt" "/path/to/Tears of the Kingdom.app"
+```
+
+It is read the way `--mod` reads it, and its `@nsobid` must match main's build ID, which a built app keeps in
+`extracted/<version>/exefs/main.build-id`. The rewriter doesn't see these bytes, so a patch that makes system calls,
+uses the thread-pointer or counter registers, or uses x18 still needs a build with `--mod`. A line on a site the app
+patches itself stops the start.
+
 <a id="data"></a>
 ### The mod's RomFS files: `--install-mod-romfs`
 
-A build does not write to the version folder (`~/Library/Application Support/MacNativeGames/TOTK/mods/<version>`)
-unless this flag is given: the folder may hold another mod's files, or files copied by hand. With the flag, the
+A build does not write to the version folder (`~/Library/Application Support/MacNativeGames/TOTK/mods/<version>`;
+Breath of the Wild's is `BotW/mods/botw160` or `botw190`, see [below](#breath-of-the-wild)) unless this flag is given: the folder may hold another mod's files, or files copied by hand. With the flag, the
 build replaces it with the mod's `romfs/` and writes its `manifest.tsv`:
 
 ```bash
@@ -264,15 +277,14 @@ from them and follow their terms). Played on the Mac with 1.4.3:
    `ゲームグラフィックス` and `草`), and 1.4.3's `ResourceSizeTable.Product.143` with every replaced texture's entry grown
    by as much as the file grew. Then write the manifest with `make_mod_manifest.py` as usual. Run both again whenever
    the folder changes.
-3. Start the game in 8 GB mode, with a larger GPU memory budget:
+3. Start the game in 8 GB mode:
 
    ```sh
-   open --env TOTK_DRAM_8GB=1 --env TOTK_GPU_BUDGET_MB=11264 "Tears of the Kingdom.app"
+   open --env TOTK_DRAM_8GB=1 "Tears of the Kingdom.app"
    ```
 
-   `TOTK_DRAM_8GB` reports a 6.8 GiB application pool to the game (as the emulators' 8 GB mode does) and lets one
-   memory pool be a zero-copy GPU buffer of up to 4 GiB (the pack's `TextureHeap` pool is about 3.8 GiB; the limit is
-   1 GiB otherwise). The budget's default (30 % of the Mac's memory) is too small for the pack outdoors.
+   `TOTK_DRAM_8GB` reports a 6.8 GiB application pool to the game (as the emulators' 8 GB mode does); the pack's
+   `TextureHeap` pool, about 3.8 GiB, becomes one zero-copy GPU buffer.
 
 Checked on a 24 GB M-series Mac: about 8.7 GB resident in play and the GPU near full load (the GPU is the
 bottleneck). A Mac with less memory than that is not expected to run it.
@@ -499,6 +511,18 @@ App 没有模块加载器：启动时它映射的是构建时的那三个代码�
 `subsdk9`、只有 `main.npdm`，甚至空的 `exefs/`）只算提示、不算失败：构建照常往下走，只是这个 mod 只生效数据
 那一半。带 `--update` 时补丁合并进更新后的模块，也就是 App 实际运行的那个。
 
+### 启动时的代码补丁（`TOTK_PCHTXT`，Mac）
+
+main 的 `.pchtxt` 也可以在游戏启动时应用，无需重新构建：
+
+```bash
+open --env TOTK_PCHTXT="/path/to/mods.pchtxt" "/path/to/Tears of the Kingdom.app"
+```
+
+读法与 `--mod` 相同，`@nsobid` 必须与 main 的构建 ID 一致；构建好的 App 把它存放在 `extracted/<版本>/exefs/main.build-id`。
+改写器看不到这些字节，所以含系统调用、使用线程指针或计数器寄存器、或使用 x18 的补丁仍需在构建时用 `--mod`。补丁行落在 App
+自己修改的位置时启动会停止。
+
 <a id="data-zh"></a>
 ### 模组的 RomFS 文件：`--install-mod-romfs`
 
@@ -610,14 +634,14 @@ mod 的 `exefs/` 里可能还有这些文件，构建这样处理：
    它写出 1.4.3 自己的 `HeapDef`，只把材质包加大的堆调大（HDPacks 的包：`TextureHeap`、`ゲームグラフィックス`、`草`），
    并写出 1.4.3 的 `ResourceSizeTable.Product.143`，每个被替换贴图的条目按文件变大的量加大。然后照常用
    `make_mod_manifest.py` 生成清单。文件夹有变化时两步都要重跑。
-3. 用 8 GB 模式和更大的显存预算启动：
+3. 用 8 GB 模式启动：
 
    ```sh
-   open --env TOTK_DRAM_8GB=1 --env TOTK_GPU_BUDGET_MB=11264 "Tears of the Kingdom.app"
+   open --env TOTK_DRAM_8GB=1 "Tears of the Kingdom.app"
    ```
 
-   `TOTK_DRAM_8GB` 向游戏报告 6.8 GiB 的应用内存池（和模拟器的 8 GB 模式一样），并允许单个内存池做成最大 4 GiB 的零拷贝
-   GPU 缓冲（材质包的 `TextureHeap` 池约 3.8 GiB，平时上限 1 GiB）。默认预算（本机内存的 30%）在野外不够用。
+   `TOTK_DRAM_8GB` 向游戏报告 6.8 GiB 的应用内存池（和模拟器的 8 GB 模式一样）；材质包约 3.8 GiB 的 `TextureHeap`
+   池做成一个零拷贝 GPU 缓冲。
 
 在 24 GB 的 Apple 芯片 Mac 上验证：游玩时常驻内存约 8.7 GB，GPU 接近满载（瓶颈在 GPU）。内存更小的 Mac 预计跑不动。
 

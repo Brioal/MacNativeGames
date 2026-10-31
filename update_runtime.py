@@ -73,11 +73,11 @@ def check_seed_chain(res, chain, *, remake=False):
         if remake:
             return True
         raise BuildError(f'{res}: no readable startup shader seed manifest; pass --seed to make one from the work folder, '
-                         f'or build the app again with build_app.py') from None
+                         f'or do a full rebuild with build_app.py') from None
     if found != chain and not remake:
         raise BuildError(f'the app\'s startup shaders are of translation chain {found}, the runtime of this repository uses '
                          f'{chain}: the shaders changed, so the app needs a new seed. Pass --seed to make it from the work '
-                         f'folder of the app\'s build (a few minutes, no game file or keys), or build the app again with '
+                         f'folder of the app\'s build (a few minutes, no game file or keys), or do a full rebuild with '
                          f'build_app.py; the app was not changed')
     return found != chain
 
@@ -117,8 +117,8 @@ def make_seed(tree, work, game, version, logs, env):
 
 def replace_seed(tree, tmp, version, game):
     """The new seed and its libraries in the app being assembled (tmp), in place of the old ones (moved out of it and
-    deleted in the background: 128,000 files), and the seed's aliases with the game data."""
-    new_res, new_data = tmp / 'Contents/Resources/totk', tmp / f'Contents/Resources/totk/build/game-data/{version}'
+    deleted in the background: 128,000 files)."""
+    new_res = tmp / 'Contents/Resources/totk'
     for rel in ('build/shader-seed', 'build/shader-libs'):
         old = new_res / rel
         if old.exists():
@@ -128,10 +128,6 @@ def replace_seed(tree, tmp, version, game):
             old.rename(aside)
             build_app.remove_in_background(aside)
     build_app.place_seed(tree, new_res, version, game=game)
-    aliases = tree / f'build/shader-seed/{version}.aliases.tsv'
-    (new_data / 'shader-seed.aliases.tsv').unlink(missing_ok=True)
-    if aliases.is_file():
-        clone(aliases, new_data / 'shader-seed.aliases.tsv')
 
 
 def config(path):
@@ -162,20 +158,39 @@ def check_game_data(data, res, version):
     for name, digest in sorted(modules.items()):
         image = res / f'rewritten/{version}/{name}.patched.bin'
         if not image.is_file() or sha256(image) != digest:
-            raise BuildError(f'{data}: made from other code modules than the app\'s ({name}); build the app again with build_app.py')
+            raise BuildError(f'{data}: made from other code modules than the app\'s ({name}); a full rebuild with '
+                             f'build_app.py is required, which rewrites the game\'s code modules')
     if sha256(res / f'extracted/{version}/romfs/runtime-index.bin') != config(data / 'romfs-config.txt')['ROMFS_INDEX_SHA256']:
-        raise BuildError(f'{data}: made for another RomFS index than the app\'s; build the app again with build_app.py')
+        raise BuildError(f'{data}: made for another RomFS index than the app\'s; a full rebuild with build_app.py is required')
     fonts = config(data / 'shared-fonts.txt')
     for i in range(6):
         font = res / 'extracted/firmware/shared-fonts' / fonts[f'FONT{i}_FILE']
         if not font.is_file() or sha256(font) != fonts[f'FONT{i}_SHA256']:
-            raise BuildError(f'{data}: made for other shared fonts than the app\'s ({font.name})')
+            raise BuildError(f'{data}: made for other shared fonts than the app\'s ({font.name}); a full rebuild with '
+                             f'build_app.py is required')
     if version.startswith('botw'):
         aoc = config(data / 'aoc-config.txt')
         for index in (1, 2):
             if int(aoc['AOC_PRESENT_MASK']) >> (index - 1) & 1 and \
                     sha256(res / f'extracted/{version}/aoc/{index}/runtime-index.bin') != aoc[f'AOC{index}_INDEX_SHA256']:
-                raise BuildError(f'{data}: made for other add-on content than the app\'s (volume {index})')
+                raise BuildError(f'{data}: made for other add-on content than the app\'s (volume {index}); a full rebuild '
+                                 f'with build_app.py is required')
+
+
+def check_overlays(res, version):
+    """The picture-size RomFS overlays (romfs-patches-out/<size>/overlay.json) whose recorded script_sha256 is not this
+    repository's make_output_res_overlay.py: those update_runtime.py cannot renew, only a full rebuild can (#1182)."""
+    script = build_app.REPO / 'games/totk/scripts/make_output_res_overlay.py'
+    want = sha256(script) if script.is_file() else None
+    stale = []
+    for record in sorted((res / f'extracted/{version}/romfs-patches-out').glob('*/overlay.json')):
+        try:
+            found = json.loads(record.read_text()).get('script_sha256')
+        except (OSError, ValueError):
+            found = None
+        if want is None or found != want:
+            stale.append(record.parent.name)
+    return stale
 
 
 def rewriter_sha256():
@@ -200,13 +215,13 @@ def check_rewriter(data, res, version, want):
     except (OSError, ValueError, KeyError):
         raise BuildError(f'{data}: the app\'s code modules are not the rewrites this repository pins for '
                          f'{VERSIONS[version]["display_version"]}, and there is no record of the rewriter that made them '
-                         f'(rewriter.txt); build the app again with build_app.py') from None
+                         f'(rewriter.txt); a full rebuild with build_app.py is required') from None
     if found != want:
         raise BuildError(f'the app\'s code modules are not the rewrites this repository pins for '
                          f'{VERSIONS[version]["display_version"]} (a build with a mod\'s code patches?), and another '
                          f'patch_nso.py ({found[:12]}…) than this repository\'s ({want[:12]}…) made them: this runtime may '
-                         f'rely on gates or fixes those modules lack. Build the app again with build_app.py; the app was '
-                         f'not changed')
+                         f'rely on gates or fixes those modules lack. A full rebuild with build_app.py is required, which '
+                         f'rewrites the modules; the app was not changed')
 
 
 def probe_runtime(tmp, version, logs):
@@ -225,8 +240,8 @@ def probe_runtime(tmp, version, logs):
 
 
 def record_commit(tmp):
-    """The commit this runtime is built from, in the app's Info.plist (MNGSourceCommit, build_app.source_commit): the
-    launcher hands it to the HUD, which would otherwise keep showing the commit of the app's first build."""
+    """The commit this runtime is built from, in the app's Info.plist: MNGSourceCommit (build_app.source_commit) for
+    the HUD, which would otherwise keep showing the commit of the app's first build."""
     path = tmp / 'Contents/Info.plist'
     info = plistlib.loads(path.read_bytes())
     commit = build_app.source_commit()
@@ -268,24 +283,9 @@ def game_data(tree, res, version, logs, env):
         run(['make', f'game-data-{version}'], logs / 'game-data.log', cwd=tree, env=env)
     except BuildError as e:
         raise BuildError(f'the work folder {tree.parent} does not hold the files the build of this app extracted, so the game '
-                         f'data folder cannot be made once (pass --work <the work folder of that build>, or build the app '
-                         f'again with build_app.py); make said: {str(e).splitlines()[0]}') from None
+                         f'data folder cannot be made once (pass --work <the work folder of that build>, or do a full '
+                         f'rebuild with build_app.py); make said: {str(e).splitlines()[0]}') from None
     return tree / f'build/game-data/{version}'
-
-
-def seed_aliases(tree, res, version, new_data):
-    """The seed's aliases the warm-up lists are renamed with (build_app.place_runtime): the app's copy, or the work folder's
-    when its seed is the app's (an older app has no copy). False when not known: the app's lists are then kept."""
-    if (res / f'build/game-data/{version}/shader-seed.aliases.tsv').is_file():
-        return True
-    seed = tree / f'build/shader-seed/{version}'
-    if not ((seed / 'seed-manifest.json').is_file() and (res / 'build/shader-seed/seed-manifest.json').is_file()
-            and sha256(seed / 'seed-manifest.json') == sha256(res / 'build/shader-seed/seed-manifest.json')):
-        return False
-    aliases = seed.with_name(seed.name + '.aliases.tsv')
-    if aliases.is_file():
-        clone(aliases, new_data / 'shader-seed.aliases.tsv')
-    return True
 
 
 def main(argv):
@@ -312,6 +312,15 @@ def main(argv):
     data = game_data(tree, res, version, logs, env)
     check_game_data(data, res, version)
     check_rewriter(data, res, version, rewriter_sha256())
+    stale_overlays = check_overlays(res, version)
+    if stale_overlays:
+        say(f'   the app\'s picture-size RomFS overlays ({", ".join(stale_overlays)}) were made by another '
+            f'make_output_res_overlay.py than this repository\'s: the runtime is updated, but only a full rebuild with '
+            f'build_app.py renews those overlays (after PR #1222)')
+    else:
+        say('   the app\'s code modules are this repository\'s rewrites, its game data matches its game files and its '
+            'picture-size overlays its make_output_res_overlay.py: updating the runtime is enough for those. The other '
+            'RomFS patches the build made (romfs-patches) keep no record to check here: after changes to them, rebuild')
     if args.seed:
         check_work_files(tree, data, version)
         if not stale:
@@ -336,12 +345,13 @@ def main(argv):
                 clone(data / name, new_data / name)
         if args.seed:
             replace_seed(tree, tmp, version, game)
-        lists = True if args.seed else seed_aliases(tree, res, version, new_data)
+        lists = (new_res / 'build/shader-seed/shader-keys.json').is_file()   # the seed resolve names the rows by
         if not lists:
-            say('   the startup shader seed of the app is not the work folder\'s, so the app keeps its warm-up lists')
+            say('   the app\'s startup shader seed predates its shader-keys.json, so the app keeps its warm-up lists (--seed makes a new one)')
         build_app.place_runtime(tree, tmp, version, logs, game=game, lists=lists)
         record_commit(tmp)
         probe_runtime(tmp, version, logs)
+        build_app.mac_pipelines(tree, new_res, version, logs)   # the new binary's pipeline keys, as a build makes them
         build_app.sign_app(tmp, logs)
         build_app.wait_until_closed(app)
         replaced = []   # the replaced Contents are deleted only once the updated app passes its check

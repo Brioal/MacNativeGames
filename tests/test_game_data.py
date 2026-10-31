@@ -157,6 +157,35 @@ class UpdateRuntime(unittest.TestCase):
         with self.assertRaisesRegex(build_app.BuildError, r'other shared fonts .*3-font'):
             update_runtime.check_game_data(data, res, 'v143')
 
+    def test_refusals_ask_for_a_full_rebuild(self):
+        """The refusals that no flag of update_runtime.py can fix say that a full rebuild is required (issue #1182)."""
+        _, res, data = self.app()
+        (res / 'rewritten/v143/sdk.patched.bin').write_bytes(b'a modded sdk')
+        with self.assertRaisesRegex(build_app.BuildError, r'\(sdk\); a full rebuild with build_app.py is required'):
+            update_runtime.check_game_data(data, res, 'v143')
+        shutil.rmtree(self.root / 'Game.app')
+        _, res, data = self.app()
+        (res / 'extracted/v143/romfs/runtime-index.bin').write_bytes(b'another index')
+        with self.assertRaisesRegex(build_app.BuildError, 'another RomFS index.*a full rebuild with build_app.py is required'):
+            update_runtime.check_game_data(data, res, 'v143')
+        shutil.rmtree(self.root / 'Game.app')
+        _, res, data = self.app()
+        (res / 'extracted/firmware/shared-fonts/3-font.bfttf').write_bytes(b'x')
+        with self.assertRaisesRegex(build_app.BuildError, r'other shared fonts .*3-font.*a full rebuild'):
+            update_runtime.check_game_data(data, res, 'v143')
+        want = update_runtime.rewriter_sha256()
+        with self.assertRaisesRegex(build_app.BuildError, 'no record of the rewriter.*a full rebuild with build_app.py is required'):
+            update_runtime.check_rewriter(data, res, 'v143', want)
+        (data / 'rewriter.txt').write_text(f'REWRITER_SHA256 {"0" * 64}\n')
+        with self.assertRaisesRegex(build_app.BuildError, 'another patch_nso.py.*A full rebuild with build_app.py is required'):
+            update_runtime.check_rewriter(data, res, 'v143', want)
+        shutil.rmtree(self.root / 'Game.app')
+        _, res, _ = self.app()
+        (res / 'build/shader-seed').mkdir(parents=True)
+        (res / 'build/shader-seed/seed-manifest.json').write_text('{"chain": "totk-native-v1-unverified"}')
+        with self.assertRaisesRegex(build_app.BuildError, 'or do a full rebuild with build_app.py'):
+            update_runtime.check_seed_chain(res, update_runtime.runtime_chain())
+
     def test_seed_of_another_chain_is_refused(self):
         _, res, _ = self.app()
         chain = update_runtime.runtime_chain()
@@ -215,7 +244,7 @@ class UpdateRuntime(unittest.TestCase):
 
     def test_replace_seed(self):
         app, res, _ = self.app()
-        for rel in ('build/shader-seed/old.metal', 'build/shader-libs/old.metallib', 'build/game-data/v143/shader-seed.aliases.tsv'):
+        for rel in ('build/shader-seed/old.metal', 'build/shader-libs/old.metallib'):
             (res / rel).parent.mkdir(parents=True, exist_ok=True)
             (res / rel).write_text('old')
         tree = self.root / 'tree'
@@ -234,7 +263,6 @@ class UpdateRuntime(unittest.TestCase):
         self.assertEqual([p.name for p in (res / 'build/shader-libs').iterdir()], [f'{hashlib.sha256(b"new").hexdigest()}.metallib'])
         self.assertEqual([p.name for p in removed], ['Game.app.shader-seed.old', 'Game.app.shader-libs.old'])
         self.assertTrue(all(p.parent == app.parent for p in removed), 'moved out of the app, not deleted inside it')
-        self.assertFalse((res / 'build/game-data/v143/shader-seed.aliases.tsv').exists(), 'the old seed\'s aliases go with it')
 
     def test_rewriter_of_the_repository(self):
         _, res, data = self.app()   # modules that are not the pinned rewrites (as a --mod build's): judged by rewriter.txt
@@ -284,9 +312,10 @@ class UpdateRuntime(unittest.TestCase):
             update_runtime.record_commit(app)
         info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
         self.assertEqual((info['MNGSourceCommit'], info['CFBundleExecutable']), ('abc1234', 'TOTK'))
-        with patch.object(build_app, 'source_commit', return_value=''):   # not a git checkout: no stale commit shown
+        with patch.object(build_app, 'source_commit', return_value=''):   # not a git checkout: no stale commit
             update_runtime.record_commit(app)
-        self.assertNotIn('MNGSourceCommit', plistlib.loads((app / 'Contents/Info.plist').read_bytes()))
+        info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
+        self.assertNotIn('MNGSourceCommit', info)
 
     def test_restore_replaced_app(self):
         app = self.root / 'Game.app'
@@ -303,21 +332,6 @@ class UpdateRuntime(unittest.TestCase):
         self.assertFalse(replaced.exists())
         self.assertEqual(failed.parent, app.parent)
 
-    def test_seed_aliases(self):
-        _, res, data = self.app()
-        tree = self.root / 'tree'
-        seed = tree / 'build/shader-seed/v143'
-        seed.mkdir(parents=True)
-        (seed / 'seed-manifest.json').write_text('{"seed": 1}')
-        (tree / 'build/shader-seed/v143.aliases.tsv').write_text('a\tb\n')
-        (res / 'build/shader-seed').mkdir(parents=True)
-        (res / 'build/shader-seed/seed-manifest.json').write_text('{"seed": 2}')
-        new_data = self.root / 'new-data'
-        self.assertFalse(update_runtime.seed_aliases(tree, res, 'v143', new_data), 'another seed: the lists are kept')
-        (res / 'build/shader-seed/seed-manifest.json').write_text('{"seed": 1}')
-        self.assertTrue(update_runtime.seed_aliases(tree, res, 'v143', new_data))
-        self.assertEqual((new_data / 'shader-seed.aliases.tsv').read_text(), 'a\tb\n')
-
     def test_place_runtime_replaces_only_the_runtime(self):
         app, res, _ = self.app()
         tree = self.root / 'tree'
@@ -328,12 +342,17 @@ class UpdateRuntime(unittest.TestCase):
         before = {p: p.read_bytes() for p in res.rglob('*') if p.is_file()}
         with patch.object(build_app, 'run') as run:
             build_app.place_runtime(tree, app, 'v143', self.root / 'logs', lists=False)
-        run.assert_not_called()   # no aliases: nothing renamed
+        run.assert_not_called()   # lists=False: the shared list is not resolved
         self.assertEqual((res / 'build/totk-native').read_bytes(), b'new build/totk-native-v143')
         self.assertEqual((app / 'Contents/MacOS/TOTK').read_bytes(), b'new build/app-launcher')
         self.assertFalse((res / 'build/pso_title.tsv').exists(), 'lists=False keeps the app\'s lists')
         for path, content in before.items():
             self.assertEqual(path.read_bytes(), content, f'{path} is a game file')
+        with patch.object(build_app, 'run') as run:   # lists: this version's rows resolved through the app's seed
+            build_app.place_runtime(tree, app, 'v143', self.root / 'logs')
+        cmd = run.call_args[0][0]
+        self.assertEqual(cmd[2:5], ['resolve', res / 'build/shader-seed', tree / 'assets/shader_list.tsv'])
+        self.assertEqual(cmd[5:], [res / 'build/pso_manifest.tsv', res / 'build/pso_title.tsv'])
 
 
 if __name__ == '__main__':

@@ -450,3 +450,4 @@ uint64_t runtime_svc(unsigned num,uint64_t *r,const char *module,uint64_t offset
 #ifdef GAME_BOTW
 #undef runtime_svc
 #endif
+#include "mem_scan.h"   /* Mac diagnostics: mscan commands (memory scan, write watch) */

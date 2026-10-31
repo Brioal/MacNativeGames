@@ -197,6 +197,133 @@ static void patch_slowmo_bounce(Module *m){
 #endif
     fprintf(stderr,"[totk] 1.4.3 high-FPS fix: trampoline slow-motion check uses the time scale, veneer +%#llx\n",(unsigned long long)stub);
 }
+/* High frame rates (#466, #556, #538: translucent rocks, stone lanterns and walls above 60 FPS):
+   TOTK advances distance/LOD mesh fades (0x0a7ac4, 0x95dd24) and pre-actor fades (0x6155e4, 0x615660)
+   using a byte counter divided by 20. The increment added to the counter each frame is
+   trunc(2.1 * ratio30). At 30 FPS ratio30 is 1.0 (increment 2), at 60 FPS ratio30 is 0.5 (increment 1).
+   Above ~63.5 FPS (ratio30 < 1/2.1 ≈ 0.476), including 90, 100, 120 and 144 FPS, trunc(2.1 * ratio30)
+   evaluates to ZERO. The counter stalls indefinitely, leaving objects either completely invisible (stuck at 0)
+   or translucent (stuck midway).
+   Clamp the increment to at least 1 at all four sites: max(trunc(2.1 * ratio30), 1).
+   Text padding stub at +928 (after Vert+ stubs, 20 words = 80 bytes). TOTK_FADE_FIX=0 or TOTK_HIGHFPS_FIX=0
+   disables this patch. */
+static void patch_fade_increment(Module *m){
+    const char *e=getenv("TOTK_HIGHFPS_FIX");if(e&&!strcmp(e,"0"))return;
+    const char *f=getenv("TOTK_FADE_FIX");if(f&&!strcmp(f,"0"))return;
+    uint64_t stub=((m->text_end+15)&~15ULL)+928;
+    if(stub+80>((m->text_end+0xfff)&~0xfffULL))runtime_fail("1.4.3 fade veneer layout");
+    uint32_t veneer[]={
+        /* stub + 0 (28 bytes): site 1 (mesh LOD fade 0x0a7ac4) */
+        0x1e380008,   /* fcvtzs w8, s0 */
+        0x7100011f,   /* cmp w8, #0 */
+        0x1a9f1508,   /* csinc w8, w8, wzr, ne */
+        0x3942792a,   /* ldrb w10, [x9, #0x9e] */
+        0x0b080148,   /* add w8, w10, w8 */
+        0x39027928,   /* strb w8, [x9, #0x9e] */
+        branch(stub+24,0x0a7ad4),
+
+        /* stub + 28 (20 bytes): site 2 (mesh LOD fade 0x95dd24) */
+        0x1e380008,   /* fcvtzs w8, s0 */
+        0x7100011f,   /* cmp w8, #0 */
+        0x1a9f1508,   /* csinc w8, w8, wzr, ne */
+        0x0b080128,   /* add w8, w9, w8 */
+        branch(stub+28+16,0x95dd2c),
+
+        /* stub + 48 (16 bytes): site 3 (pre-actor fade 0x6155e4) */
+        0x1e38000a,   /* fcvtzs w10, s0 */
+        0x7100015f,   /* cmp w10, #0 */
+        0x1a9f154a,   /* csinc w10, w10, wzr, ne */
+        branch(stub+48+12,0x6155e8),
+
+        /* stub + 64 (16 bytes): site 4 (pre-actor fade 0x615660) */
+        0x1e38000a,   /* fcvtzs w10, s0 */
+        0x7100015f,   /* cmp w10, #0 */
+        0x1a9f154a,   /* csinc w10, w10, wzr, ne */
+        branch(stub+64+12,0x615664),
+    };
+    const Patch guards[]={
+        {0x0a7ac4,0x1e380008,0},{0x0a7ac8,0x3942792a,0},
+        {0x0a7acc,0x0b080148,0},{0x0a7ad0,0x39027928,0},
+        {0x95dd24,0x1e380008,0},{0x95dd28,0x0b080128,0},
+        {0x6155e4,0x1e38000a,0},
+        {0x615660,0x1e38000a,0},
+    };
+    uint32_t jump_s1[]={branch(0x0a7ac4,stub),0xd503201f,0xd503201f,0xd503201f};
+    uint32_t jump_s2[]={branch(0x95dd24,stub+28),0xd503201f};
+    uint32_t jump_s3=branch(0x6155e4,stub+48);
+    uint32_t jump_s4=branch(0x615660,stub+64);
+#if TARGET_OS_IPHONE
+    uint32_t got[8];
+    for(unsigned i=0;i<4;i++)memcpy(got+i,m->base+0x0a7ac4+4*i,4);
+    for(unsigned i=0;i<2;i++)memcpy(got+4+i,m->base+0x95dd24+4*i,4);
+    memcpy(got+6,m->base+0x6155e4,4);
+    memcpy(got+7,m->base+0x615660,4);
+    if(memcmp(got,jump_s1,16)||memcmp(got+4,jump_s2,8)||got[6]!=jump_s3||got[7]!=jump_s4||
+       memcmp(m->base+stub,veneer,sizeof veneer))
+        runtime_fail("1.4.3 embedded fade patch mismatch");
+#else
+    for(unsigned i=0;i<sizeof guards/sizeof *guards;i++){
+        uint32_t w;memcpy(&w,m->base+guards[i].off,4);
+        if(w!=guards[i].original)runtime_fail("1.4.3 fade check: original instruction mismatch");
+    }
+    for(unsigned i=0;i<sizeof veneer;i++)if(m->base[stub+i])runtime_fail("1.4.3 fade veneer padding not empty");
+    memcpy(m->base+stub,veneer,sizeof veneer);
+    memcpy(m->base+0x0a7ac4,jump_s1,sizeof jump_s1);
+    memcpy(m->base+0x95dd24,jump_s2,sizeof jump_s2);
+    memcpy(m->base+0x6155e4,&jump_s3,4);
+    memcpy(m->base+0x615660,&jump_s4,4);
+#endif
+    fprintf(stderr,"[totk] 1.4.3 high-FPS fix: LOD/actor fade counters clamped to >= 1 at 4 sites (prevents translucent objects above 60 FPS), veneer +%#llx\n",(unsigned long long)stub);
+}
+/* Benchmark camera (survey sessions only, 2026-10-20). The look-at camera update stores the frame's eye (doubles +0x60,
+   floats +0x38), target (doubles +0x78, floats +0x44) and normalised up (+0x50) into the camera in x20 at
+   main+0x6287b4..0x628824, then builds the view matrix from d1,d2,d0 / d3,d4,d5 / s7,s16,s17. The adrp at main+0x628828
+   (the point UltraCam's "Camera Controller Universal" signature finds) branches to a stub that, while the block at
+   data+0x100 is active, loads the benchmark camera into those registers and the camera's fields; the game's camera
+   controller keeps its own state, so the view returns to the player when the block goes inactive. Block: u32 active,
+   eye f64[3] +8, target f64[3] +32, up f32[3] +56, then the float copies of eye and target as at +0x38 (+72..+95), the
+   vertical FOV in radians +96 (stored into the controller's +0x13c, which main+0x628c3c copies to the projection's
+   fovy, as UltraCam's "Camera Controller Hook Fix 1.4.0+" does). UltraCam's time-of-day hook ("TimeHook") matches an
+   unrelated function in 1.4.3, so the benchmark sets no time: the save's time runs on as in citron.
+   The stub sits after the rewriter's patch area (main+file_size up to the data page, executable like the rest of that
+   area and never written by the rewriter): main's text padding is taken by the veneers above, the aspect and Vert+ stubs. */
+#define BENCH_CAM_DATA 0x100u
+static void patch_bench_cam(Module *m){
+#if TARGET_OS_IPHONE
+    (void)m;
+#else
+    const char *survey=getenv("TOTK_SURVEY");if(!survey||strcmp(survey,"1"))return;
+    uint64_t data=(m->file_size+0x3fff)&~0x3fffULL,stub=(m->file_size+15)&~15ULL;   /* the patch area's tail */
+    static const uint32_t body[]={
+        0x91040129, /* add x9, x9, #0x100 */
+        0xb940012a, /* ldr w10, [x9]: active? */
+        0x3400028a, /* cbz w10, restore (20 instructions on) */
+        0x6d408921,0xfd400d20,0x6d421123,0xfd401925,   /* ldp d1,d2 / ldr d0 / ldp d3,d4 / ldr d5: eye and target */
+        0x2d474127,0xbd404131,                         /* ldp s7,s16 / ldr s17: up */
+        0x6d060a81,0x6d070e80,0x6d081684,              /* stp into the camera's doubles +0x60..+0x88 */
+        0x2d0a4287,0xbd005a91,                         /* stp s7,s16,[x20,#0x50] / str s17,[x20,#0x58] */
+        0xf940252a,0xf9001e8a,0xf940292a,0xf900228a,0xf9402d2a,0xf900268a,   /* float eye and target +0x38..+0x4f */
+        0xb940612a,0xb9013e6a,                         /* ldr w10, [x9, #96] / str w10, [x19, #0x13c]: FOV */
+        0xf84107ea}; /* restore: ldr x10, [sp], #16 */
+    enum { N = 2 + sizeof body / 4 + 2 };
+    uint32_t words[N];
+    words[0]=0xf81f0fea;   /* str x10, [sp, #-16]! */
+    words[1]=adrp(9,(uintptr_t)m->base+stub+4,(uintptr_t)m->base+data);
+    memcpy(words+2,body,sizeof body);
+    words[N-2]=adrp(9,(uintptr_t)m->base+stub+(N-2)*4,(uintptr_t)m->base+0x396f000);   /* the instruction it replaces */
+    words[N-1]=branch(stub+(N-1)*4,0x62882c);
+    uint32_t got;memcpy(&got,m->base+0x628828,4);
+    if(got!=0xf0019a29)runtime_fail("1.4.3 benchmark camera: the camera code does not match");
+    if(stub<m->patch_off||stub+sizeof words>data||data+BENCH_CAM_DATA+112>m->size)runtime_fail("1.4.3 benchmark camera layout");
+    for(unsigned i=0;i<sizeof words;i++)if(m->base[stub+i])runtime_fail("1.4.3 benchmark camera padding not empty");
+    memset(m->base+data+BENCH_CAM_DATA,0,112);
+    memcpy(m->base+stub,words,sizeof words);
+    uint32_t jump=branch(0x628828,stub);memcpy(m->base+0x628828,&jump,4);
+    runtime_bench_cam=m->base+data+BENCH_CAM_DATA;
+    fprintf(stderr,"[totk] 1.4.3 benchmark camera: look-at and FOV override at main+0x628828 (HUD not hidden yet), stub +%#llx\n",
+            (unsigned long long)stub);
+#endif
+}
 #if !TARGET_OS_IPHONE
 /* High-frame-rate diagnostics (Mac, TOTK_INPUT_FILE commands). Such bugs sit in game code that compares the game's time
    values with constants tuned for 30 Hz (#61: X+0x28 > 100 above). The time values: the FrameRateMgr singleton
@@ -269,6 +396,7 @@ void runtime_game_patches(Module *m) {
     patch_render_res(m);
     patch_fixed_res(m);
     patch_slowmo_bounce(m);
+    patch_fade_increment(m);
 #if !TARGET_OS_IPHONE
     diag_main=m;   /* frmwatch / xpoke */
 #endif
@@ -276,6 +404,7 @@ void runtime_game_patches(Module *m) {
       aspect_install(m, "1.4.3", sites, 4, 2, ((m->text_end + 15) & ~15ULL) + 48,   /* after the two veneers above */
                      ((m->text_end + 15) & ~15ULL) + 320,   /* Vert+ stubs (2 x 304 bytes): after the bounce veneer at +256, before the rewriter's code at +1024 */
                      (m->file_size + 0x3fff) & ~0x3fffULL); }
+    patch_bench_cam(m);
     const char *enabled = getenv("TOTK_FPS60");
     if (enabled && !strcmp(enabled, "0")) {
         fprintf(stderr, "[totk] 1.4.3 shipping frame controller (TOTK_FPS60=0)\n");
@@ -328,14 +457,15 @@ int runtime_output_res(unsigned *w,unsigned *h){
         }else if(e&&!strcmp(e,"0"))on=0;
         else if(!e||!*e||!strcmp(e,"auto")){
             /* The largest canvas whose heap overlay the app carries (romfs.c loads <canvas>-scene-<canvas>, the scene
-               following the canvas): 2K. The start stays 1080p; only the swapchain and the heaps are sized for 2K.
-               Not 4K (2026-10-25, user "添加 4k 支持"): its heaps make the game create one 1490 MiB memory pool at the
-               start, which the graphics layer's 1 GiB zero-copy limit refuses (nvn_mtl.m POOL_BUFFER_MAX, set after two
-               macOS kernel panics in IOGPUFamily); the game stopped at once. 4K needs that pool split first. */
+               following the canvas): 4K when the build made it (build_app.py native 4K: on by default on a Mac with
+               16 GB or more, user 2026-10-30), else 2K. The start stays 1080p; only the swapchain and the heaps are
+               sized for the largest. A 4K scene's heaps make the game create one 1,490 MiB memory pool at the start
+               (+1,380 MiB for the application pool), which the graphics layer takes since it has no size limit on a
+               pool's zero-copy buffer (nvn_mtl.m pool_range_check, 2026-10-30). */
             const char *dir=getenv("TOTK_ROMFS_PATCHES_OUT");char path[4096];
-            static const unsigned sizes[][2]={{2560,1440}};
+            static const unsigned sizes[][4]={{3840,2160,3840,2160},{2560,1440,2560,1440}};   /* canvas, scene */
             for(unsigned i=0;i<sizeof sizes/sizeof *sizes&&!on;i++){
-                snprintf(path,sizeof path,"%s/%ux%u-scene-%ux%u/manifest.tsv",dir?dir:"extracted/v143/romfs-patches-out",sizes[i][0],sizes[i][1],sizes[i][0],sizes[i][1]);
+                snprintf(path,sizeof path,"%s/%ux%u-scene-%ux%u/manifest.tsv",dir?dir:"extracted/v143/romfs-patches-out",sizes[i][0],sizes[i][1],sizes[i][2],sizes[i][3]);
                 FILE *f=fopen(path,"r");if(f){fclose(f);on=1;cw=sizes[i][0];ch=sizes[i][1];}
             }
             output_full_at_start=0;
@@ -570,30 +700,35 @@ static void output_size_set(uint64_t want){
 /* The settings panel's resolution (runtime.h OUTPUT_MODE_*), kept for the next start (picture_mode_save). Native is
    the swapchain's size (2K); with MetalFX the output stage then scales the 2K canvas up to the window (a 4K screen). */
 int runtime_output_native(int mode,unsigned *w,unsigned *h){
-    if(!output_page||(mode!=OUTPUT_MODE_NATIVE&&mode!=OUTPUT_MODE_NATIVE_METALFX))return 0;
+    if(!output_page)return 0;
+    if(mode==OUTPUT_MODE_NATIVE_4K){if(output_w<3840||output_h<2160)return 0;*w=3840;*h=2160;return 1;}   /* a native 4K app */
+    if(mode!=OUTPUT_MODE_NATIVE&&mode!=OUTPUT_MODE_NATIVE_METALFX)return 0;
+    if(output_w>2560){*w=2560;*h=1440;return 1;}   /* a 4K app's 2K stays 2560x1440 */
     *w=output_w;*h=output_h;return 1;
 }
 int runtime_output_modes(void){
     if(!output_page)return 0;
-    return 1<<OUTPUT_MODE_OFF|1<<OUTPUT_MODE_METALFX|1<<OUTPUT_MODE_720P|1<<OUTPUT_MODE_NATIVE|1<<OUTPUT_MODE_NATIVE_METALFX;
+    return 1<<OUTPUT_MODE_OFF|1<<OUTPUT_MODE_METALFX|1<<OUTPUT_MODE_720P|1<<OUTPUT_MODE_NATIVE|1<<OUTPUT_MODE_NATIVE_METALFX|
+           (output_w>=3840&&output_h>=2160?1<<OUTPUT_MODE_NATIVE_4K:0);
 }
 int runtime_output_mode(void){
     extern int mfxup_output_enabled(void);
     if(!output_page)return OUTPUT_MODE_OFF;
     uint64_t now=atomic_load((_Atomic uint64_t *)(void *)(output_page+32));
     if(now==pack_size(1280,720))return OUTPUT_MODE_720P;
+    if(now==pack_size(3840,2160)&&!mfxup_output_enabled())return OUTPUT_MODE_NATIVE_4K;
     if((unsigned)now>1920)return mfxup_output_enabled()?OUTPUT_MODE_NATIVE_METALFX:OUTPUT_MODE_NATIVE;
     return mfxup_output_enabled()?OUTPUT_MODE_METALFX:OUTPUT_MODE_OFF;
 }
 int runtime_output_mode_set(int mode){
     extern void dm_gfx_set_flag(const char *,int);
-    if(!output_page||mode<OUTPUT_MODE_OFF||mode>OUTPUT_MODE_720P||!(runtime_output_modes()&1<<mode))return 0;
+    if(!output_page||mode<OUTPUT_MODE_OFF||mode>OUTPUT_MODE_NATIVE_4K||!(runtime_output_modes()&1<<mode))return 0;
     unsigned w=1920,h=1080;
-    if(mode==OUTPUT_MODE_720P){w=1280;h=720;}else if(mode==OUTPUT_MODE_NATIVE||mode==OUTPUT_MODE_NATIVE_METALFX)runtime_output_native(mode,&w,&h);
+    if(mode==OUTPUT_MODE_720P){w=1280;h=720;}else if(mode==OUTPUT_MODE_NATIVE||mode==OUTPUT_MODE_NATIVE_METALFX||mode==OUTPUT_MODE_NATIVE_4K)runtime_output_native(mode,&w,&h);
     output_size_set(pack_size(w,h));
     int mfx=mode==OUTPUT_MODE_METALFX||mode==OUTPUT_MODE_NATIVE_METALFX;
     dm_gfx_set_flag("mfx_output",mfx);dm_gfx_set_flag("mfx_upscale",mfx);
-    fprintf(stderr,"[totk] picture: %s\n",mode==OUTPUT_MODE_720P?"720p":mode==OUTPUT_MODE_NATIVE_METALFX?"native 2K, MetalFX to the window":
+    fprintf(stderr,"[totk] picture: %s\n",mode==OUTPUT_MODE_NATIVE_4K?"native 4K":mode==OUTPUT_MODE_720P?"720p":mode==OUTPUT_MODE_NATIVE_METALFX?"native 2K, MetalFX to the window":
             mode==OUTPUT_MODE_NATIVE?"native":mode==OUTPUT_MODE_METALFX?"MetalFX 2K":"off (1080p)");
     picture_mode_save(atomic_load((_Atomic uint64_t *)(void *)(output_page+32)));
     return 1;

@@ -8,9 +8,11 @@
 #include <stdio.h>
 #include <string.h>
 #include "runtime.h"
+#include "keyboard_map.h"
 #include "game_version.h"
 #include "totk_ui_lang.h"
 #include "gamepad_layout.h"
+#import "playtime.h"
 #include "../third_party/d2r_gfx/gfx/nvn/totk_mfx_mode.h"
 #include "../third_party/d2r_gfx/gfx/nvn/fps_overlay.h"
 static NSWindow *window;
@@ -25,11 +27,6 @@ static int fpsGraphEnabled;
 /* The settings panel (key 1, settings_panel.h): while it is open the game gets no keyboard or mouse input. */
 static int settingsOpen;
 static void settings_show(int open);
-static BOOL bindingsOpen;
-static int bindingAction;
-static int bindings_capture_key(unsigned code);
-static void bindings_show(int open);
-static void bindings_load(void);
 #ifdef GAME_BOTW160
 static int amiiboPanelOpen;
 static void amiibo_panel_show(int open);
@@ -48,6 +45,35 @@ void taa_set(int on);
 static uint64_t bootStartNS;
 static _Atomic uint64_t presentedFrames;
 static _Atomic int warmPending;
+/* Counts foreground time after warm-up, including menus, like Screen Time.
+   Diagnostic profiles have their own counter and never update the user's file. */
+static TOTKPlaytime *playtime;
+static NSTimer *playtimeTimer;
+static BOOL playtimeSleeping;
+static void front_playtime_tick(BOOL stopping) {
+ if(!playtime)return;
+ BOOL running=!stopping&&!playtimeSleeping&&NSApp.isActive&&window.isKeyWindow
+  &&!window.miniaturized&&atomic_load(&presentedFrames)&&!atomic_load(&warmPending);
+ [playtime tick:runtime_now_ns()/1e9 active:running];
+ if(stopping)[playtime save];
+}
+static void front_playtime_start(void) {
+ const char *profile=getenv("TOTK_PROFILE_DIR");
+ NSString *dir=[NSString stringWithUTF8String:profile?profile:"user-data"];
+ playtime=[[TOTKPlaytime alloc] initWithPath:[dir stringByAppendingPathComponent:@"playtime.json"]];
+ /* Keep counting independent of HUD visibility, the legacy corner layout and its refresh timer. */
+ playtimeTimer=[NSTimer timerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t){(void)t;front_playtime_tick(NO);}];
+ [NSRunLoop.mainRunLoop addTimer:playtimeTimer forMode:NSRunLoopCommonModes];
+ NSNotificationCenter *nc=NSWorkspace.sharedWorkspace.notificationCenter;
+ for(NSString *name in @[NSWorkspaceWillSleepNotification,NSWorkspaceScreensDidSleepNotification,NSWorkspaceSessionDidResignActiveNotification])
+  [nc addObserverForName:name object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n){
+   (void)n;front_playtime_tick(YES);playtimeSleeping=YES;
+  }];
+ for(NSString *name in @[NSWorkspaceDidWakeNotification,NSWorkspaceScreensDidWakeNotification,NSWorkspaceSessionDidBecomeActiveNotification])
+  [nc addObserverForName:name object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n){
+   (void)n;playtimeSleeping=NO;[playtime tick:runtime_now_ns()/1e9 active:NO];
+  }];
+}
 static CVDisplayLinkRef displayLink;
 static _Atomic int focused;
 static pthread_mutex_t vsyncLock=PTHREAD_MUTEX_INITIALIZER;
@@ -139,6 +165,18 @@ static CVReturn vsync_callback(CVDisplayLinkRef link,const CVTimeStamp *now,cons
  (void)link;(void)now;(void)output;(void)flags;(void)out;(void)ctx;
  pthread_mutex_lock(&vsyncLock);for(unsigned i=0;i<vsyncCount;i++)hle_signal_system_event(vsyncEvents[i]);pthread_mutex_unlock(&vsyncLock);return kCVReturnSuccess;
 }
+/* 1 / 0: the modifier key e (a flag change) is down / up; -1: not one the layout takes (Command, Caps Lock, fn). Each side
+   has its own device bit; a flag change without them (a synthesized event) goes by the shared flag. */
+static int front_modifier_down(NSEvent *e){
+ NSEventModifierFlags f=e.modifierFlags,shared;unsigned long side,pair;
+ switch(e.keyCode){
+  case 56:shared=NSEventModifierFlagShift;side=0x2;pair=0x6;break;case 60:shared=NSEventModifierFlagShift;side=0x4;pair=0x6;break;
+  case 59:shared=NSEventModifierFlagControl;side=0x1;pair=0x2001;break;case 62:shared=NSEventModifierFlagControl;side=0x2000;pair=0x2001;break;
+  case 58:shared=NSEventModifierFlagOption;side=0x20;pair=0x60;break;case 61:shared=NSEventModifierFlagOption;side=0x40;pair=0x60;break;
+  default:return -1;}
+ if(!(f&shared))return 0;
+ return f&pair?!!(f&side):1;
+}
 @interface TOTKInputView:NSView
 @property(strong) NSTimer *cursorHideTimer;
 @property BOOL cursorAutoHideActive;
@@ -147,7 +185,7 @@ static CVReturn vsync_callback(CVDisplayLinkRef link,const CVTimeStamp *now,cons
 @end
 @implementation TOTKInputView
 -(BOOL)acceptsFirstResponder{return YES;}
-/* The native panels take keyboard input away from the game; held game keys are cleared when a panel opens. */
+/* Amiibo entry stays available alongside the upstream keyboard/mouse layout and settings tabs. */
 -(void)keyDown:(NSEvent *)e{
 #ifdef GAME_BOTW160
  if(!settingsOpen&&!textEntryOpen&&e.keyCode==0&&(e.modifierFlags&NSEventModifierFlagOption)){amiibo_panel_show(!amiiboPanelOpen);return;}
@@ -156,14 +194,12 @@ static CVReturn vsync_callback(CVDisplayLinkRef link,const CVTimeStamp *now,cons
  if(textEntryOpen)return;
 #ifdef GAME_BOTW160
  if(!settingsOpen&&e.keyCode==19&&!(e.modifierFlags&(NSEventModifierFlagCommand|NSEventModifierFlagControl|NSEventModifierFlagOption))){
-  int keys[24][2],conflict=0;runtime_bindings_get(keys);
-  for(int i=0;i<24;i++)for(int j=0;j<2;j++)conflict|=keys[i][j]==19;
+  KeyMap keymap;runtime_keymap_get(&keymap);
+  BOOL conflict=keymap_action_of(&keymap,(int)e.keyCode,NULL)>=0;
   if(!conflict){if(!e.isARepeat)front_amiibo_next();return;}
   if(!e.isARepeat)front_amiibo_toast(@(TOTK_UI("按键 2 已绑定游戏操作，请在键位设置中解除","Key 2 is bound to a game action; clear it in Key bindings")));
  }
 #endif
- if(settingsOpen&&bindingsOpen){if(bindingAction>=0){bindings_capture_key(e.keyCode);return;}
-  if(e.keyCode==53){bindings_show(0);return;}if(e.keyCode!=18)return;}
  if(settingsOpen&&e.keyCode!=18){if(e.keyCode==53)settings_show(0);return;}runtime_input_key(e.keyCode,1);}
 -(void)keyUp:(NSEvent *)e{
 #ifdef GAME_BOTW160
@@ -174,11 +210,8 @@ static CVReturn vsync_callback(CVDisplayLinkRef link,const CVTimeStamp *now,cons
 #ifdef GAME_BOTW160
  if(amiiboPanelOpen)return;
 #endif
- unsigned code=e.keyCode;
- if(code!=56&&code!=60&&code!=58&&code!=61&&code!=59&&code!=62)return;
- int down=CGEventSourceKeyState(kCGEventSourceStateCombinedSessionState,(CGKeyCode)code);
- if(settingsOpen&&bindingsOpen&&bindingAction>=0){if(down)bindings_capture_key(code);return;}
- if(!(settingsOpen||textEntryOpen)||!down)runtime_input_key(code,down);
+ int down=front_modifier_down(e);
+ if(down>=0&&(!(settingsOpen||textEntryOpen)||!down))runtime_input_key(e.keyCode,down);
 }
 /* The game has no mouse controls. In native full screen, keep the pointer out of the picture while idle, but show it again
    as soon as it moves; restore it when the window loses focus or leaves full screen. */
@@ -242,8 +275,17 @@ enum { FPS_GRAPH_SAMPLES = 61, FPS_GRAPH_WIDTH = 220, FPS_GRAPH_HEIGHT = 90 };
 -(void)refresh;
 @end
 /* Compact HUD (default): one small box in the window's top-right corner with the FPS, shader and load lines (published by
-   gfx/nvn/fps_overlay.c, refreshed twice a second); the settings panel's overlay row picks all, FPS only or none.
+   gfx/nvn/fps_overlay.c, refreshed twice a second); the settings panel's overlay row picks all, FPS + playtime or none.
    TOTK_HUD=corners: the lines stay in the picture's corners and there is no box. */
+static int settings_pad_family(void);                 /* settings_panel.h: the controller family button names follow */
+static NSString *settings_panel_pad_text(int family);  /* settings_panel.h: the controller's way to the panel */
+/* The box's last line (user 2026-10-30): how to open the settings panel, as it is bound now: key 1, and with a
+   controller connected its button or chord (L3 + R3 unless the key bindings set one). */
+static NSString *hud_settings_hint(void) {
+ int detected=-1;runtime_gamepad_type(&detected);
+ if(detected<=GAMEPAD_TYPE_AUTO)return @(TOTK_UI("设置：键盘 1","Settings: key 1"));
+ return [NSString stringWithFormat:@(TOTK_UI("设置：键盘 1 · 手柄 %@","Settings: key 1 · controller %@")),settings_panel_pad_text(settings_pad_family())];
+}
 @implementation TOTKHudBox
 -(instancetype)initWithFrame:(NSRect)frame{if((self=[super initWithFrame:frame])){self.wantsLayer=YES;self.layer.backgroundColor=[NSColor colorWithCalibratedWhite:0.04 alpha:0.72].CGColor;self.layer.cornerRadius=7;self.layer.borderWidth=1;self.layer.borderColor=[NSColor colorWithCalibratedWhite:1 alpha:0.14].CGColor;
  self.label=[NSTextField labelWithString:@""];self.label.alignment=NSTextAlignmentLeft;self.label.maximumNumberOfLines=0;self.label.lineBreakMode=NSLineBreakByClipping;[self addSubview:self.label];
@@ -259,9 +301,16 @@ enum { FPS_GRAPH_SAMPLES = 61, FPS_GRAPH_WIDTH = 220, FPS_GRAPH_HEIGHT = 90 };
   for(int i=0;i<4;i++){char t[128];int hl=0;if((!full&&i!=0)||!hud_snapshot(i,t,sizeof t,&hl))continue;   // FPS, shaders, render pipelines, load
    [a appendAttributedString:[[NSAttributedString alloc] initWithString:[([NSString stringWithUTF8String:t] ?: @"") stringByAppendingString:@"\n"] attributes:@{NSFontAttributeName:mono,NSForegroundColorAttributeName:hl?yellow:green}]];}
   if(!a.length)[a appendAttributedString:[[NSAttributedString alloc] initWithString:@"FPS --\n" attributes:@{NSFontAttributeName:mono,NSForegroundColorAttributeName:green}]];
+  if(playtime)[a appendAttributedString:[[NSAttributedString alloc] initWithString:[playtime.text stringByAppendingString:@"\n"]
+   attributes:@{NSFontAttributeName:mono,NSForegroundColorAttributeName:green}]];
+  int bpct=runtime_gamepad_battery_percent(),bleft=runtime_gamepad_battery_left_percent();
+  if(bpct>=0)[a appendAttributedString:[[NSAttributedString alloc] initWithString:bleft>=0?[NSString stringWithFormat:@(TOTK_UI("手柄电量 左 %d%% 右 %d%%\n","Controller L %d%% R %d%%\n")),bleft,bpct]:[NSString stringWithFormat:@(TOTK_UI("手柄电量 %d%%\n","Controller %d%%\n")),bpct]
+   attributes:@{NSFontAttributeName:mono,NSForegroundColorAttributeName:green}]];
   /* The commit the app was built from (user 2026-10-25), last and grey: TOTK_SOURCE_COMMIT from the launcher. */
   const char *commit=getenv("TOTK_SOURCE_COMMIT");
   if(commit&&*commit)[a appendAttributedString:[[NSAttributedString alloc] initWithString:[NSString stringWithFormat:@(TOTK_UI("版本 %s\n","build %s\n")),commit]
+   attributes:@{NSFontAttributeName:mono,NSForegroundColorAttributeName:[NSColor colorWithCalibratedWhite:0.6 alpha:1]}]];
+  [a appendAttributedString:[[NSAttributedString alloc] initWithString:[hud_settings_hint() stringByAppendingString:@"\n"]
    attributes:@{NSFontAttributeName:mono,NSForegroundColorAttributeName:[NSColor colorWithCalibratedWhite:0.6 alpha:1]}]];
   [a deleteCharactersInRange:NSMakeRange(a.length-1,1)];   // no empty line under the last one
   BOOL changed=![a isEqualToAttributedString:self.label.attributedStringValue];
@@ -389,14 +438,7 @@ enum { FPS_GRAPH_SAMPLES = 61, FPS_GRAPH_WIDTH = 220, FPS_GRAPH_HEIGHT = 90 };
  if(points==1)[[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(last.x-1,last.y-1,2,2)] fill];
 }
 @end
-#include "key_bindings_panel.h"
 #include "settings_panel.h"
-static void bindings_show(int open){
- open=!!open;if(open==bindingsOpen)return;
- bindingAction=-1;bindingsOpen=open;
- if(open){bindingsScrollY=-1;settingsPanel.hidden=YES;bindings_refresh();}
- else{[bindingsPanel removeFromSuperview];bindingsPanel=nil;bindingsScroll=nil;settingsPanel.hidden=NO;[window makeFirstResponder:window.contentView];}
-}
 
 /* The live FPS in the menu bar: a menu of the game's own, after its app menu on the left, whose title is the frame rate
    ("60 FPS", "50+50 FPS" while frame interpolation shows generated frames), refreshed twice a second with the value the
@@ -481,14 +523,15 @@ void runtime_front_resize_aspect(double ratio){
 @interface TOTKWindowDelegate:NSObject<NSWindowDelegate>
 @end
 @implementation TOTKWindowDelegate
--(void)windowDidBecomeKey:(NSNotification *)n{(void)n;atomic_store(&focused,1);if(window.styleMask&NSWindowStyleMaskFullScreen)[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:YES];runtime_oe_push_message(15);front_mouse_update();fprintf(stderr,"[totk] window gained focus\n");front_sr_window();}
--(void)windowDidResignKey:(NSNotification *)n{(void)n;atomic_store(&focused,0);[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];front_mouse_update();runtime_input_clear();runtime_oe_push_message(15);fprintf(stderr,"[totk] window lost focus\n");front_sr_window();}
+-(void)windowDidBecomeKey:(NSNotification *)n{(void)n;front_playtime_tick(NO);atomic_store(&focused,1);if(window.styleMask&NSWindowStyleMaskFullScreen)[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:YES];runtime_oe_push_message(15);front_mouse_update();fprintf(stderr,"[totk] window gained focus\n");front_sr_window();}
+-(void)windowDidResignKey:(NSNotification *)n{(void)n;front_playtime_tick(YES);atomic_store(&focused,0);[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];front_mouse_update();runtime_input_clear();runtime_oe_push_message(15);fprintf(stderr,"[totk] window lost focus\n");front_sr_window();}
 /* The process ends with the window. Save writes go straight to the files (runtime/fs_host.c), so a close in the middle of a
    save waits (up to 15 s, the window already gone) until the game has written and committed it (runtime_fs_save_busy). */
--(void)windowWillClose:(NSNotification *)n{(void)n;
+-(void)windowWillClose:(NSNotification *)n{(void)n;front_playtime_tick(YES);
  if(totk_sr_closing)totk_sr_closing();
  [(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];
  if(mouseHeld){mouseHeld=NO;CGAssociateMouseAndMouseCursorPosition(true);[NSCursor unhide];}
+ runtime_triggers_release();   /* _exit skips atexit; a save can also keep the game running a while without its window */
  if(!runtime_fs_save_busy()){fprintf(stderr,"[totk] window closed; graceful guest shutdown pending\n");_exit(0);}
  fprintf(stderr,"[totk] window closed while the game is saving: quitting when the save is done\n");
  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{
@@ -857,7 +900,6 @@ void runtime_front_run(void(*callback)(void)){
   [NSApplication sharedApplication];[NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
   runtime_mouse_set_hook(front_mouse_update);
   runtime_gamepad_start();
-  bindings_load();
   /* Default window: the docked output size, 1920x1080, scaled down (16:9 kept) when the screen's visible area is smaller. */
   /* TOTK_WINDOW_SIZE=<w>x<h> (test scripts only, e.g. the 2K output test; the desktop launcher never sets it): another starting size. */
   NSRect vis=NSScreen.mainScreen?NSScreen.mainScreen.visibleFrame:NSMakeRect(0,0,1920,1080+28);CGFloat ww=1920,wh=1080;
@@ -887,13 +929,16 @@ void runtime_front_run(void(*callback)(void)){
   [bootOverlay addSubview:bootStage];[bootOverlay addSubview:bootDetail];[bootOverlay addSubview:bootProgress];
   [window.contentView addSubview:bootOverlay];[bootProgress startAnimation:nil];
   front_menubar_fps();
+  settings_restore_start();
   settings_controller_start();
+  front_playtime_start();
   /* The FPS, shader and load lines: in the corner box (compact HUD), or with TOTK_HUD=corners drawn into the game picture's
      corners by the present encoder (gfx/nvn/fps_overlay.c). The box sits under the opaque boot overlay until it is hidden. */
   TOTKHudBox *box=[[TOTKHudBox alloc] initWithFrame:NSZeroRect];box.autoresizingMask=NSViewMinXMargin|NSViewMinYMargin;
   [window.contentView addSubview:box positioned:NSWindowBelow relativeTo:bootOverlay];hudBox=box;
-  /* The settings panel's FPS graph switch, kept in fps-graph.txt next to controls.txt ("on" / "off", default off). */
-  {char word[16];if(runtime_setting_word("fps-graph.txt",word,sizeof word))fpsGraphEnabled=!strncmp(word,"on",2);}
+  /* The settings panel's FPS graph switch, one for both games (user 2026-10-29: "改成两个游戏共用 默认打开"): fps-graph.txt
+     in the folder above the game's ("on" / "off"), on when there is none. */
+  {char word[16];fpsGraphEnabled=1;if(runtime_shared_setting_word("fps-graph.txt",word,sizeof word))fpsGraphEnabled=!!strncmp(word,"off",3);}
   TOTKFpsGraph *graph=[[TOTKFpsGraph alloc] initWithFrame:NSZeroRect];[box addSubview:graph];fpsGraphBox=graph;[graph setEnabled:fpsGraphEnabled];[box refresh];
   [window makeFirstResponder:window.contentView];[window center];front_sync_drawable();
   if(assume_focus()){[window orderFrontRegardless];}else{[window makeKeyAndOrderFront:nil];[NSApp activateIgnoringOtherApps:YES];}   /* in front of other apps' windows, keyboard left alone */

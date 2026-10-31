@@ -90,7 +90,7 @@ $(eval $(call GAME_DATA,botw190,analysis/botw190-port/phase12-validation.json))
 
 .PHONY: runtime binary probe-loader boot
 
-build/totk-native: Makefile runtime/loader.c runtime/runtime.h runtime/game_patches.c runtime/game_patches.h runtime/game_version.h runtime/world_survey.c runtime/world_survey.h runtime/game_slot.c runtime/services.c runtime/gate.S runtime/hle_stack.S runtime/hle_stack.c runtime/romfs.c runtime/romfs_path.h runtime/threads.c runtime/thread_compat.h runtime/thread_enter.S runtime/ipc.h runtime/audio_renderer.h runtime/audio_mixer.h runtime/audio_reverb.h runtime/audio_effects.h runtime/fs_host.h runtime/autoload.h runtime/autoload.c runtime/game_data.c runtime/game_data.h runtime/gfx_bridge.c runtime/frontend.m runtime/text_keyboard.h runtime/settings_panel.h runtime/key_bindings_panel.h runtime/feedback_settings.h runtime/account.c runtime/input.c runtime/hid_feedback.c runtime/motion_fusion.c runtime/gamepad.m runtime/gamepad_layout.h runtime/switch_left_fallback.h runtime/gamepad_feedback.m runtime/gfx_probe.c runtime/vpool_probe.m runtime/gpu_path_probe.m runtime/memory_probe.c runtime/shared_font.c runtime/ipc.c runtime/audio_renderer.c runtime/audio_mixer.c runtime/audio_reverb.c runtime/audio_effects.c runtime/fs_host.c runtime/opus_codec.c runtime/movie_host.c runtime/movie_host.h runtime/time_host.c runtime/applet_host.c runtime/swkbd_host.c $(GFX_OBJECTS)
+build/totk-native: Makefile runtime/playtime.h runtime/loader.c runtime/runtime.h runtime/game_patches.c runtime/game_patches.h runtime/game_version.h runtime/world_survey.c runtime/world_survey.h runtime/game_slot.c runtime/services.c runtime/gate.S runtime/hle_stack.S runtime/hle_stack.c runtime/romfs.c runtime/romfs_path.h runtime/threads.c runtime/thread_compat.h runtime/thread_enter.S runtime/ipc.h runtime/audio_renderer.h runtime/audio_mixer.h runtime/audio_reverb.h runtime/audio_effects.h runtime/fs_host.h runtime/autoload.h runtime/autoload.c runtime/game_data.c runtime/game_data.h runtime/gfx_bridge.c runtime/frontend.m runtime/text_keyboard.h runtime/settings_panel.h runtime/feedback_settings.h runtime/account.c runtime/input.c runtime/hid_feedback.c runtime/motion_fusion.c runtime/gamepad.m runtime/gamepad_layout.h runtime/switch_left_fallback.h runtime/gamepad_feedback.m runtime/gfx_probe.c runtime/vpool_probe.m runtime/gpu_path_probe.m runtime/memory_probe.c runtime/shared_font.c runtime/ipc.c runtime/audio_renderer.c runtime/audio_mixer.c runtime/audio_reverb.c runtime/audio_effects.c runtime/fs_host.c runtime/opus_codec.c runtime/movie_host.c runtime/movie_host.h runtime/time_host.c runtime/applet_host.c runtime/swkbd_host.c $(GFX_OBJECTS)
 	xcrun clang -std=c11 $(NATIVE_OPT) -g -Wall -Wextra -Werror -Wno-deprecated-declarations -Ithird_party/d2r_gfx/gfx/nvn/include -Ibuild -I/opt/homebrew/opt/opus/include/opus -I/opt/homebrew/opt/libvpx/include runtime/loader.c runtime/game_data.c runtime/game_patches.c runtime/world_survey.c runtime/game_slot.c runtime/services.c runtime/romfs.c runtime/threads.c runtime/gate.S runtime/hle_stack.S runtime/hle_stack.c runtime/thread_enter.S runtime/gfx_bridge.c runtime/frontend.m runtime/account.c runtime/input.c runtime/hid_feedback.c runtime/motion_fusion.c runtime/autoload.c runtime/gamepad.m runtime/gamepad_feedback.m runtime/gfx_probe.c runtime/vpool_probe.m runtime/gpu_path_probe.m runtime/memory_probe.c runtime/shared_font.c runtime/ipc.c runtime/audio_renderer.c runtime/audio_mixer.c runtime/audio_reverb.c runtime/audio_effects.c runtime/fs_host.c runtime/opus_codec.c runtime/movie_host.c runtime/time_host.c runtime/applet_host.c runtime/swkbd_host.c $(GFX_OBJECTS) /opt/homebrew/opt/opus/lib/libopus.a /opt/homebrew/opt/libvpx/lib/libvpx.a -framework Metal -framework MetalFX -framework Foundation -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework CoreText -framework UniformTypeIdentifiers -fobjc-arc -framework Cocoa -framework CoreVideo -framework CoreFoundation -framework AudioToolbox -framework GameController -framework CoreHaptics -framework IOKit -o "$@"
 
 # Both warm-up lists come from the one shared shader list (docs/shader-list.md): pso_title.tsv is what the title screen,
@@ -249,6 +249,14 @@ probe-input: build/input-probe
 	build/input-probe > analysis/native-input-probe.json
 	@cat analysis/native-input-probe.json
 	@if TOTK_PROBE_NEGATIVE=20 build/input-probe > /dev/null 2> analysis/native-input-probe-negative.log; then echo "negative control 20 passed: the orientation check cannot see a reference-frame integration"; exit 1; else echo "negative control 20 (reference-frame integration) failed as expected: $$(cat analysis/native-input-probe-negative.log)"; fi
+
+# TOTK_INPUT_FILE (runtime/input.c): lines at start, a line appended in place, the file replaced by a longer copy of the
+# list (devicectl device copy to an iPhone) and by a new, shorter list.
+.PHONY: probe-input-file
+build/input-file-probe: scripts/input_file_probe.c runtime/input.c runtime/hid_feedback.c runtime/feedback_settings.h runtime/motion_fusion.c runtime/autoload.c runtime/autoload.h runtime/runtime.h
+	xcrun clang -std=c11 -O1 -Wall -Wextra -Werror scripts/input_file_probe.c runtime/input.c runtime/hid_feedback.c runtime/motion_fusion.c runtime/autoload.c -o "$@"
+probe-input-file: build/input-file-probe
+	build/input-file-probe
 
 # TOTK_AUTOLOAD (runtime/autoload.c) through the production controller state; the last run is the negative control
 # (auto-load off while presses are expected) and must fail.
@@ -480,3 +488,9 @@ probe-gpu-sampler-border: runtime-v143
 
 .PHONY: probe-gpu-sampler-border-edge
 probe-gpu-sampler-border-edge: probe-gpu-sampler-border
+
+.PHONY: probe-playtime
+probe-playtime:
+	@mkdir -p build
+	xcrun clang -Wall -Wextra -Werror -fobjc-arc tests/playtime/probe.m -framework Foundation -o build/playtime-probe
+	build/playtime-probe
