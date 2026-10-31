@@ -1283,6 +1283,9 @@ def place_runtime(tree, app, version, logs, *, game='totk', lists=True):
     clone(tree / 'prebuilt/macos-arm64/totk_xlate', res / 'build/shader-service/totk_xlate')   # where totk_shader_rt.m looks for it
     if lists:
         resolve_lists(tree, res, game, logs)
+    if game == 'botw' and version == 'botw160':
+        for name in ('prepare_mod_generation.py', 'make_mod_manifest.py', 'make_romfs_patches.py'):
+            clone(tree / 'scripts' / name, res / 'scripts' / name)
     clone(tree / 'build/app-launcher', app / f'Contents/MacOS/{APPS[game][2]}')
 
 

@@ -30,6 +30,8 @@ static void settings_show(int open);
 #ifdef GAME_BOTW160
 static int amiiboPanelOpen;
 static void amiibo_panel_show(int open);
+static BOOL modManagerOpen;
+static void mod_manager_show(int open);
 static void front_amiibo_next(void);
 static void front_amiibo_toast(NSString *message);
 #endif
@@ -190,6 +192,7 @@ static int front_modifier_down(NSEvent *e){
 #ifdef GAME_BOTW160
  if(!settingsOpen&&!textEntryOpen&&e.keyCode==0&&(e.modifierFlags&NSEventModifierFlagOption)){amiibo_panel_show(!amiiboPanelOpen);return;}
  if(amiiboPanelOpen){if(e.keyCode==53)amiibo_panel_show(0);return;}
+ if(modManagerOpen){if(e.keyCode==18)settings_show(0);else if(e.keyCode==53)mod_manager_show(0);return;}
 #endif
  if(textEntryOpen)return;
 #ifdef GAME_BOTW160
@@ -203,12 +206,12 @@ static int front_modifier_down(NSEvent *e){
  if(settingsOpen&&e.keyCode!=18){if(e.keyCode==53)settings_show(0);return;}runtime_input_key(e.keyCode,1);}
 -(void)keyUp:(NSEvent *)e{
 #ifdef GAME_BOTW160
- if(amiiboPanelOpen)return;
+ if(amiiboPanelOpen||modManagerOpen)return;
 #endif
  runtime_input_key(e.keyCode,0);}
 -(void)flagsChanged:(NSEvent *)e{
 #ifdef GAME_BOTW160
- if(amiiboPanelOpen)return;
+ if(amiiboPanelOpen||modManagerOpen)return;
 #endif
  int down=front_modifier_down(e);
  if(down>=0&&(!(settingsOpen||textEntryOpen)||!down))runtime_input_key(e.keyCode,down);
@@ -251,7 +254,7 @@ static int front_modifier_down(NSEvent *e){
 static void front_mouse_update(void){   /* main thread; also runtime/gamepad.m's hook when mouse mode changes */
  BOOL want=window&&runtime_mouse_enabled()&&window.isKeyWindow&&!textEntryOpen&&!settingsOpen
 #ifdef GAME_BOTW160
-  &&!amiiboPanelOpen
+  &&!amiiboPanelOpen&&!modManagerOpen
 #endif
   ;
  if(want==mouseHeld)return;
@@ -439,6 +442,7 @@ static NSString *hud_settings_hint(void) {
 }
 @end
 #include "settings_panel.h"
+#include "mod_manager_panel.h"
 
 /* The live FPS in the menu bar: a menu of the game's own, after its app menu on the left, whose title is the frame rate
    ("60 FPS", "50+50 FPS" while frame interpolation shows generated frames), refreshed twice a second with the value the

@@ -311,10 +311,47 @@ int main(int argc, char **argv) {
            scripts/make_button_icons.py --style keyboard or azerty). The fonts are read once, so it holds for the session. */
         NSString *mods = [data stringByAppendingPathComponent:@"mods/" TOTK_GAME_DIR];
         NSString *keyboardMods = [mods stringByAppendingString:@"-keyboard"];
-        if (!getenv("TOTK_ROMFS_MODS") && [NSFileManager.defaultManager fileExistsAtPath:[keyboardMods stringByAppendingPathComponent:@"manifest.tsv"]] &&
-            !controller_connected())
-            mods = keyboardMods;
+        BOOL romfsModsOverridden = getenv("TOTK_ROMFS_MODS") != NULL;
+#if defined(GAME_BOTW160)
+        NSString *modManagerConfig = [data stringByAppendingPathComponent:@"mod-manager/botw160.json"];
+#endif
+        if (!romfsModsOverridden) {
+#if defined(GAME_BOTW160)
+            if ([NSFileManager.defaultManager fileExistsAtPath:modManagerConfig]) {
+                NSError *configError = nil;
+                NSData *configData = [NSData dataWithContentsOfFile:modManagerConfig options:0 error:&configError];
+                id configValue = configData ? [NSJSONSerialization JSONObjectWithData:configData options:0 error:&configError] : nil;
+                if (![configValue isKindOfClass:NSDictionary.class] || ![configValue[@"enabled"] isKindOfClass:NSNumber.class]) {
+                    show_error([NSString stringWithFormat:@"Cannot read the BotW mod-manager configuration at %@: %@",
+                                modManagerConfig, configError.localizedDescription ?: @"invalid configuration"]);
+                    return 1;
+                }
+                if ([configValue[@"enabled"] boolValue]) {
+                    NSString *generation = [configValue[@"generation"] isKindOfClass:NSString.class] ? configValue[@"generation"] : nil;
+                    NSString *manifest = generation ? [generation stringByAppendingPathComponent:@"manifest.tsv"] : nil;
+                    if (!manifest || ![NSFileManager.defaultManager fileExistsAtPath:manifest]) {
+                        show_error([NSString stringWithFormat:@"The prepared BotW mod generation is missing its manifest: %@",
+                                    generation ?: modManagerConfig]);
+                        return 1;
+                    }
+                    mods = generation;
+                } else {
+                    mods = @"0";  // an explicit empty manager selection also disables the keyboard-icon overlay
+                }
+            } else if ([NSFileManager.defaultManager fileExistsAtPath:[keyboardMods stringByAppendingPathComponent:@"manifest.tsv"]] &&
+                       !controller_connected()) {
+                mods = keyboardMods;
+            }
+#else
+            if ([NSFileManager.defaultManager fileExistsAtPath:[keyboardMods stringByAppendingPathComponent:@"manifest.tsv"]] &&
+                !controller_connected())
+                mods = keyboardMods;
+#endif
+        }
         setenv("TOTK_ROMFS_MODS", mods.fileSystemRepresentation, 0);
+#if defined(GAME_BOTW160)
+        setenv("TOTK_ROMFS_MODS_OVERRIDE", romfsModsOverridden ? "1" : "0", 1);
+#endif
         /* The game's language (runtime/services.c): the app's first preferred language, which also follows a per-app
            language (defaults write org.macnativegames.totk AppleLanguages -array pt-BR). TOTK_LANG still overrides it. */
         NSString *preferred = NSLocale.preferredLanguages.firstObject;

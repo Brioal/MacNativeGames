@@ -8,7 +8,8 @@
 A mod reaches the game in one of two ways:
 
 - **RomFS content** is loaded while the game runs. Whether a mod is used is decided by one file:
-  `manifest.tsv`. The app does not scan folders for mods.
+  `manifest.tsv`. Breath of the Wild 1.6.0 also has an in-game manager for unpacked RomFS mods; other versions still use
+  the manual folder workflow below.
 - **Code patches for the main module** (`exefs/main.pchtxt`, `exefs/*.ips`, `exefs/*.ips32`) are merged into
   the app **at build time** with `--mod`. See [Code patches](#code) below.
 
@@ -291,6 +292,18 @@ bottleneck). A Mac with less memory than that is not expected to run it.
 
 ### Breath of the Wild
 
+Breath of the Wild 1.6.0 has a **Mod Manager** button in the settings panel opened with `1`. Choose a folder whose
+immediate subfolders are unpacked mods, select the ones to use, then choose **Save and Prepare**. The manager copies
+the selected RomFS files into a new generation and writes its manifest against the installed app. The game uses that
+generation on the next launch; the current session is left untouched. Saving an empty selection disables manager mods
+on the next launch. Existing manual mod folders are kept. An explicit `TOTK_ROMFS_MODS` environment setting takes
+priority.
+
+The manager supports a `romfs/` directory or a folder containing RomFS paths directly. It blocks ExeFS and code-patch
+mods, archives that have not been extracted, and selections where two mods replace the same path. It does not merge
+files inside `.pack` archives, build resource-size tables, or confirm that a mod targets this game version. Python 3.14
+must be installed on the Mac to prepare a selection. Use the manual instructions below if you need other workflows.
+
 The Breath of the Wild app reads its mods from the folder for its version, `botw160` for 1.6.0 or `botw190` for 1.9.0:
 
 ```text
@@ -401,7 +414,7 @@ These come from how a pack was built, not from its content, and none of them pri
 
 一个 mod 有两种方式进入游戏：
 
-- **RomFS 内容**在游戏运行时加载，是否生效完全由 `manifest.tsv` 决定，App 不会扫描文件夹找 mod。
+- **RomFS 内容**在游戏运行时加载，是否生效由 `manifest.tsv` 决定。旷野之息 1.6.0 另有游戏内模组管理器；其他版本仍按下面的手动目录流程使用。
 - **主模块的代码补丁**（`exefs/main.pchtxt`、`exefs/*.ips`、`exefs/*.ips32`）在**构建时**用 `--mod`
   合并进 App，见下面的[代码补丁](#code-zh)。
 
@@ -646,6 +659,10 @@ mod 的 `exefs/` 里可能还有这些文件，构建这样处理：
 在 24 GB 的 Apple 芯片 Mac 上验证：游玩时常驻内存约 8.7 GB，GPU 接近满载（瓶颈在 GPU）。内存更小的 Mac 预计跑不动。
 
 ### 旷野之息
+
+旷野之息 1.6.0 可在按 `1` 打开的设置面板中进入**模组管理**。选择一个文件夹（其直接子文件夹分别是已经解压的 mod），勾选要启用的模组，再点**保存并准备**。管理器会把选中的 RomFS 文件复制到新的生成目录，并针对已安装 App 生成清单。下次启动才会使用新目录；本次运行保持不变。全部取消勾选并保存，会在下次启动关闭管理器模组。原手动模组目录会保留。显式设置的 `TOTK_ROMFS_MODS` 环境变量优先。
+
+支持 `romfs/` 子目录或直接按 RomFS 路径排列的文件。含 ExeFS/代码补丁、尚未解压的归档，或多个模组替换同一路径时会阻止保存。管理器不会合并 `.pack` 内部文件、生成资源大小表，也不能确认模组是否针对当前游戏版本；准备模组需要本机安装 Python 3.14。其他工作流继续使用下面的手动说明。
 
 旷野之息 App 按版本从对应目录读取 mod，1.6.0 是 `botw160`，1.9.0 是 `botw190`：
 

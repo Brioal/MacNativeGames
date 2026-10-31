@@ -42,7 +42,7 @@ int main(int argc,char **argv){@autoreleasepool{
    [d removeObjectForKey:[NSString stringWithFormat:@"BOTWAmiiboUsage.%@.%@",uid,suffix]];
  [d setObject:folder forKey:@"BOTWAmiiboFolder"];
  [d removeObjectForKey:@"BOTWAmiiboSequenceFolder"];[d removeObjectForKey:@"BOTWAmiiboSequenceLast"];
- int keys[24][2];runtime_bindings_default(keys);runtime_bindings_set(keys);
+ KeyMap keys;keymap_default(&keys);assert(keymap_assign(&keys,19,-1));runtime_keymap_set(&keys);
  [(TOTKInputView *)window.contentView keyDown:key2(NO)];
  assert([last() isEqual:@"01.bin"]&&nfp_scan_pending&&nfp_amiibo.uuid[0]==1);
  assert([toast() containsString:@"01.bin"]);assert([amiiboToast hitTest:NSMakePoint(5,5)]==nil);assert(front_amiibo_today_count(amiiboCurrentID)==1);
@@ -76,14 +76,21 @@ int main(int argc,char **argv){@autoreleasepool{
  [amiiboMenuTarget scanAmiiboURL:[NSURL fileURLWithPath:[folder stringByAppendingPathComponent:@"01.bin"]]];
  assert(nfp_amiibo.uuid[0]==7&&front_amiibo_today_count(amiiboCurrentID)==before+1);
  assert(nfp_start_detection(nfp_virtual_handle)==0&&nfp_stop_detection(nfp_virtual_handle)==0);
- settings_show(1);BOOL found=NO;
- for(NSView *v in settingsPanel.subviews)if([v isKindOfClass:NSButton.class]&&[((NSButton *)v).title containsString:@"2：下一张"])found=YES;
- assert(found);[(TOTKInputView *)window.contentView keyDown:key2(NO)];assert(!nfp_scan_pending);settings_show(0);
- keys[0][0]=19;runtime_bindings_set(keys);[(TOTKInputView *)window.contentView keyDown:key2(NO)];
+ settings_show(1);BOOL found=NO;NSButton *managerButton=nil;
+ for(NSView *v in settingsPanel.subviews)if([v isKindOfClass:NSButton.class]){
+  if([((NSButton *)v).title containsString:@"2：下一张"])found=YES;
+  if([((NSButton *)v).title containsString:@"模组管理"])managerButton=(NSButton *)v;
+ }
+ assert(found&&managerButton);[(TOTKInputView *)window.contentView keyDown:key2(NO)];assert(!nfp_scan_pending);
+ [managerButton performClick:nil];assert(modManagerOpen&&settingsPanel.hidden&&modManagerPanel.superview==window.contentView);
+ [modManagerPanel save:nil];
+ NSDictionary *managerConfig=[NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:mod_manager_config_path()] options:0 error:nil];
+ assert(managerConfig&&![managerConfig[@"enabled"] boolValue]&&[managerConfig[@"mods"] isEqual:@[]]);
+ settings_show(0);assert(!modManagerOpen&&!settingsOpen);
+ runtime_keymap_get(&keys);assert(keymap_assign(&keys,19,KEYMAP_DLEFT));runtime_keymap_set(&keys);
+ [(TOTKInputView *)window.contentView keyDown:key2(NO)];
  assert([last() isEqual:@"first.bin"]&&!nfp_scan_pending&&[toast() containsString:@"绑定"]);
- runtime_bindings_default(keys);runtime_bindings_set(keys);
- settingsOpen=1;bindingAction=0;bindingsOpen=1;assert(bindings_capture_key(19));runtime_bindings_get(keys);assert(keys[0][0]==-1);
- settingsOpen=0;bindingsOpen=0;
+ assert(keymap_assign(&keys,19,-1));runtime_keymap_set(&keys);
  NSString *empty=[dir stringByAppendingPathComponent:@"empty"];
  assert([NSFileManager.defaultManager createDirectoryAtPath:empty withIntermediateDirectories:YES attributes:nil error:nil]);
  [d setObject:empty forKey:@"BOTWAmiiboFolder"];front_amiibo_next();assert([toast() containsString:@"没有"]);

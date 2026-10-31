@@ -585,9 +585,17 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
     shared list lacks, and star the project. */
  NSButton *contrib=[NSButton buttonWithTitle:settings_text("贡献着色器和管线","Contribute shaders and pipelines") target:self action:@selector(contribute:)];
  NSButton *star=[NSButton buttonWithTitle:settings_text("⭐ 给作者点赞","⭐ Star the project") target:self action:@selector(star:)];
+#ifdef GAME_BOTW160
+ NSButton *amiibo=[NSButton buttonWithTitle:settings_text("虚拟 Amiibo（2：下一张）","Amiibo (2: next)") target:self action:@selector(openAmiibo:)];
+ NSButton *mods=[NSButton buttonWithTitle:settings_text("模组管理","Mod Manager") target:self action:@selector(openModManager:)];
+ for(NSButton *b in @[contrib,star,amiibo,mods]){b.controlSize=NSControlSizeSmall;b.font=[NSFont systemFontOfSize:11];b.refusesFirstResponder=YES;[b sizeToFit];
+  b.frame=NSMakeRect(0,5,b.frame.size.width,24);b.wantsLayer=YES;[self addSubview:b];}
+ self.displayButtons=@[mods,amiibo,star,contrib];
+#else
  for(NSButton *b in @[contrib,star]){b.controlSize=NSControlSizeSmall;b.font=[NSFont systemFontOfSize:11];b.refusesFirstResponder=YES;[b sizeToFit];
   b.frame=NSMakeRect(0,5,b.frame.size.width,24);b.wantsLayer=YES;[self addSubview:b];}
  self.displayButtons=@[star,contrib];
+#endif
  [self selectPage:g_settings_page];[self refresh];
  __weak TOTKSettingsPanel *weak=self;
  self.clickMonitor=[NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskLeftMouseDown|NSEventMaskRightMouseDown handler:^NSEvent *(NSEvent *e){
@@ -678,6 +686,10 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
   panel.versionLabel.stringValue=settings_version_text();panel.versionLabel.frame=NSMakeRect(18,9,230,16);});
 }
 -(CGFloat)footerButtonsWidth{CGFloat w=0;for(NSButton *b in self.displayButtons)if(!b.hidden)w+=b.frame.size.width+6;return w;}
+#ifdef GAME_BOTW160
+-(void)openAmiibo:(id)sender{(void)sender;settings_show(0);amiibo_panel_show(1);}
+-(void)openModManager:(id)sender{(void)sender;mod_manager_show(1);}
+#endif
 /* The shaders and pipelines this game met that the shared list lacks (totk_shader_contrib.h): sent with gh off the main
    thread, the issue then opened; without gh (or when it fails) the GitHub form opens and Finder shows the file to drag in. */
 -(void)contribute:(NSButton *)button{
@@ -781,6 +793,9 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
  if(what[1].boolValue)[self assignPad:what[0].intValue action:(int)item.tag];else [self assignInput:what[0].intValue action:(int)item.tag];
 }
 -(void)assignInput:(int)input action:(int)action{
+#ifdef GAME_BOTW160
+ if(input==19&&action>=0){[self note:settings_text("按键 2 留给 Amiibo 扫描，不能绑定游戏操作","Key 2 is reserved for Amiibo scans and cannot be bound to a game action")];return;}
+#endif
  KeyMap keys;runtime_keymap_get(&keys);
  if(keymap_assign(&keys,input,action)){runtime_keymap_set(&keys);
   fprintf(stderr,"[totk] settings: %s -> %s\n",keymap_input_name(input),action<0?"nothing":keymap_action_name(action));}
@@ -851,6 +866,9 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
   default:return e;
  }
  if(input<0||!keymap_bindable(input))return nil;   /* not one the layout takes: keep waiting */
+#ifdef GAME_BOTW160
+ if(input==19){[self note:settings_text("按键 2 留给 Amiibo 扫描，不能绑定游戏操作","Key 2 is reserved for Amiibo scans and cannot be bound to a game action")];return nil;}
+#endif
  [self bindInput:input];
  return nil;
 }
@@ -1010,6 +1028,9 @@ static void settings_rebuild(void) {
 static void settings_show(int open) {   /* main thread */
  open=!!open;
  if(!window||open==settingsOpen||(open&&textEntryOpen))return;
+#ifdef GAME_BOTW160
+ if(!open&&modManagerOpen)mod_manager_show(0);
+#endif
  /* Made again at every opening: what the game offers (aspect ratio, resolution) is known only once its code is in. */
  if(open){g_settings_controller_active=NO;settings_panel_replace();}else [settingsPanel endCapture];
  settingsOpen=open;
