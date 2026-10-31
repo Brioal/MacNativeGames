@@ -55,6 +55,7 @@ uint64_t runtime_module_lock_permission(uint64_t address,uint64_t size,unsigned 
 int runtime_module_query(uint64_t address,uint64_t *base,uint64_t *size,unsigned *state,unsigned *permission,unsigned *attribute);
 void runtime_oe_push_message(uint32_t message);
 void hle_bind_system_event(void *event, int autoclear);
+void hle_signal_system_event(void *event);
 uint64_t runtime_svc(unsigned num, uint64_t *regs, const char *module, uint64_t offset);
 void runtime_gate(void);
 void runtime_thread_init(void);
@@ -147,7 +148,13 @@ typedef struct {
  uint8_t first_write_month, first_write_day;
  uint16_t last_write_year;
  uint8_t last_write_month, last_write_day;
+ uint32_t application_area_id;
+ uint8_t application_area_exists;
+ uint8_t application_area[0xd8];
 } RuntimeVirtualAmiibo;
+#ifdef GAME_BOTW160
+int runtime_amiibo_decode(const uint8_t *tag, size_t tag_size, const uint8_t *key_data, size_t key_size, uint8_t plain[0x208]);
+#endif
 void runtime_nfp_set_virtual_amiibo(const RuntimeVirtualAmiibo *amiibo);
 void runtime_nfp_request_scan(void);
 int runtime_nfp_try_select(const RuntimeVirtualAmiibo *amiibo);

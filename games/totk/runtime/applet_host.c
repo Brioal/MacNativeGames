@@ -92,7 +92,7 @@ _Static_assert(sizeof(NfpModelInfoHost) == 0x40, "NFP ModelInfo ABI");
 _Static_assert(sizeof(NfpRegisterInfoHost) == 0x100, "NFP RegisterInfo ABI");
 static pthread_mutex_t nfp_lock = PTHREAD_MUTEX_INITIALIZER;
 static RuntimeVirtualAmiibo nfp_amiibo;
-static int nfp_selected, nfp_detecting, nfp_scan_pending, nfp_status;
+static int nfp_selected, nfp_detecting, nfp_scan_pending, nfp_status, nfp_application_area_open;
 static int nfp_availability_pending, nfp_activate_pending, nfp_deactivate_pending;
 static void *nfp_availability_event, *nfp_activate_event, *nfp_deactivate_event;
 static const uint8_t nfp_virtual_handle[8] = {1};
@@ -105,6 +105,7 @@ void runtime_nfp_set_virtual_amiibo(const RuntimeVirtualAmiibo *amiibo) {
     int was_found = nfp_status >= 2;
     nfp_amiibo = *amiibo;
     nfp_selected = 1;
+    nfp_application_area_open = 0;
     nfp_scan_pending = 0;
     nfp_status = nfp_detecting ? 1 : 0;
     nfp_activate_pending = 0;
@@ -142,6 +143,7 @@ static int nfp_try(const RuntimeVirtualAmiibo *amiibo, int scan) {
     }
     if (amiibo) {
         nfp_amiibo = *amiibo; nfp_selected = 1; nfp_status = nfp_detecting ? 1 : 0;
+        nfp_application_area_open = 0;
         nfp_activate_pending = 0; availability = nfp_availability_event;
         nfp_availability_pending = availability == NULL;
     }
@@ -253,6 +255,7 @@ static unsigned nfp_unmount(const void *handle) {
     pthread_mutex_lock(&nfp_lock);
     if (!nfp_selected || !nfp_valid_handle(handle) || nfp_status != 4) { pthread_mutex_unlock(&nfp_lock); return NFP_DEVICE_NOT_FOUND; }
     nfp_status = 2;
+    nfp_application_area_open = 0;
     pthread_mutex_unlock(&nfp_lock);
     return 0;
 }
@@ -307,18 +310,46 @@ static unsigned nfp_get_common_info(void *out, const void *handle) {
     info->last_write_date = (NfpDateHost){amiibo.last_write_year, amiibo.last_write_month, amiibo.last_write_day};
     info->write_counter = amiibo.write_counter;
     info->version = amiibo.version;
-    info->application_area_size = 0;
+    info->application_area_size = 0xd8;
     return 0;
 }
 static unsigned nfp_open_application_area(const void *handle, uint32_t application_area_id) {
-    (void)handle; (void)application_area_id;
-    fprintf(stderr, "[botw] Amiibo application area is unavailable (tag payload is not decoded)\n");
-    return NFP_DEVICE_NOT_FOUND;
+    pthread_mutex_lock(&nfp_lock);
+    uint32_t stored_id = nfp_amiibo.application_area_id;
+    int area_exists = nfp_amiibo.application_area_exists;
+    int valid = nfp_selected && nfp_valid_handle(handle) && nfp_status == 4 &&
+                area_exists && stored_id == application_area_id;
+    nfp_application_area_open = valid;
+    pthread_mutex_unlock(&nfp_lock);
+    fprintf(stderr, "[botw] NFP OpenApplicationArea requested=%08x stored=%08x exists=%d result=%s\n",
+            application_area_id, stored_id, area_exists, valid ? "ok" : "device-not-found");
+    return valid ? 0 : NFP_DEVICE_NOT_FOUND;
 }
-static unsigned nfp_get_application_area(void *out, uint64_t *size, const void *handle, uint64_t offset) {
-    (void)out; (void)handle; (void)offset;
-    *size = 0;
-    return NFP_DEVICE_NOT_FOUND;
+static unsigned nfp_get_application_area(void *out, uint64_t *size, const void *handle, uint64_t requested_size) {
+    uint64_t returned_size = 0;
+    uint8_t level = 0, hearts = 0;
+    int has_fields = 0;
+    pthread_mutex_lock(&nfp_lock);
+    int valid = nfp_selected && nfp_valid_handle(handle) && nfp_status == 4 && nfp_application_area_open;
+    if (valid) {
+        returned_size = requested_size < sizeof nfp_amiibo.application_area ? requested_size : sizeof nfp_amiibo.application_area;
+        *size = returned_size;
+        memcpy(out, nfp_amiibo.application_area, (size_t)returned_size);
+        if (returned_size > 0x12) {
+            const uint8_t *area = out;
+            level = area[0x11]; hearts = area[0x12]; has_fields = 1;
+        }
+    } else {
+        *size = 0;
+    }
+    pthread_mutex_unlock(&nfp_lock);
+    unsigned result = valid ? 0 : NFP_DEVICE_NOT_FOUND;
+    fprintf(stderr, "[botw] NFP GetApplicationArea requested=%llu size=%llu result=%s",
+            (unsigned long long)requested_size, (unsigned long long)returned_size,
+            result ? "device-not-found" : "ok");
+    if (has_fields) fprintf(stderr, " level=%u heartsRaw=%u", level, hearts);
+    fputc('\n', stderr);
+    return result;
 }
 static unsigned nfp_get_register_info(void *out, const void *handle) {
     RuntimeVirtualAmiibo amiibo;

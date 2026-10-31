@@ -583,6 +583,7 @@ static NSURL *amiiboCurrentURL;
 @property(strong) NSScrollView *listScrollView;
 @property(strong) NSView *fileList;
 @property(strong) NSTextField *folderLabel;
+@property(strong) NSTextField *keyLabel;
 @property(copy) NSArray<NSURL *> *files;
 -(void)refreshFiles;
 -(void)center;
@@ -615,6 +616,28 @@ static NSString *front_amiibo_identifier_for_url(NSURL *url) {
  amiibo.uid_length=7;
  return front_amiibo_identifier(&amiibo);
 }
+static NSString *front_amiibo_key_path(NSURL *amiiboURL) {
+ NSFileManager *manager=NSFileManager.defaultManager;
+ NSString *directory=amiiboURL.URLByDeletingLastPathComponent.path;
+ if(!directory.length)directory=[[NSUserDefaults.standardUserDefaults stringForKey:@"BOTWAmiiboFolder"] copy];
+ if(directory.length){
+  NSString *sameFolder=[directory stringByAppendingPathComponent:@"key_retail.bin"];
+  if([manager fileExistsAtPath:sameFolder])return sameFolder;
+ }
+ NSUserDefaults *defaults=NSUserDefaults.standardUserDefaults;
+ NSString *saved=[defaults stringForKey:@"BOTWAmiiboRetailKey"];
+ if(saved.length)return saved;
+ NSString *download=[NSHomeDirectory() stringByAppendingPathComponent:@"Downloads/key_retail.bin"];
+ return [manager fileExistsAtPath:download]?download:nil;
+}
+static NSData *front_amiibo_retail_key(NSURL *amiiboURL,NSString **problem) {
+ NSString *path=front_amiibo_key_path(amiiboURL);
+ if(!path){if(problem)*problem=@(TOTK_UI("请选择 key_retail.bin 解密密钥","Choose the key_retail.bin retail key first"));return nil;}
+ NSError *error=nil;NSData *key=[NSData dataWithContentsOfFile:path options:NSDataReadingMappedIfSafe error:&error];
+ if(!key){if(problem)*problem=error.localizedDescription;return nil;}
+ if(key.length!=0xa0){if(problem)*problem=@(TOTK_UI("密钥文件大小无效，key_retail.bin 应为 160 字节","Invalid key file size; key_retail.bin must be 160 bytes"));return nil;}
+ return key;
+}
 static NSString *front_amiibo_usage_prefix(NSString *identifier) { return [@"BOTWAmiiboUsage." stringByAppendingString:identifier]; }
 static NSInteger front_amiibo_today_count(NSString *identifier) {
  NSUserDefaults *defaults=NSUserDefaults.standardUserDefaults;NSString *prefix=front_amiibo_usage_prefix(identifier);
@@ -641,6 +664,7 @@ static void front_amiibo_record_scan(void) {
 @interface BOTWAmiiboMenuTarget:NSObject
 -(void)chooseAmiibo:(id)sender;
 -(void)chooseAmiiboFolder:(id)sender;
+-(void)chooseAmiiboKey:(id)sender;
 -(void)simulateAmiiboScan:(id)sender;
 -(void)scanAmiiboURL:(NSURL *)url;
 -(BOOL)loadAmiiboURL:(NSURL *)url;
@@ -667,6 +691,17 @@ static void front_amiibo_record_scan(void) {
  [[NSUserDefaults standardUserDefaults] setObject:panel.URL.path forKey:@"BOTWAmiiboFolder"];
  [amiiboPanel refreshFiles];
 }
+-(void)chooseAmiiboKey:(id)sender{
+ (void)sender;
+ NSOpenPanel *panel=[NSOpenPanel openPanel];panel.canChooseFiles=YES;panel.canChooseDirectories=NO;panel.allowsMultipleSelection=NO;
+ panel.allowedFileTypes=@[@"bin"];
+ NSString *saved=front_amiibo_key_path(nil);if(saved.length)panel.directoryURL=[NSURL fileURLWithPath:saved].URLByDeletingLastPathComponent;
+ panel.message=@(TOTK_UI("优先读取 Amiibo 文件同目录的 key_retail.bin；此处选择的密钥作为备用，不会复制进 App","key_retail.bin beside the Amiibo file takes priority; the selected key is a fallback and is not copied into the app"));
+ panel.prompt=@(TOTK_UI("使用此密钥","Use This Key"));
+ if([panel runModal]!=NSModalResponseOK)return;
+ [[NSUserDefaults standardUserDefaults] setObject:panel.URL.path forKey:@"BOTWAmiiboRetailKey"];
+ [amiiboPanel refreshFiles];
+}
 -(BOOL)parseAmiiboURL:(NSURL *)url into:(RuntimeVirtualAmiibo *)out error:(NSString **)outProblem{
  NSError *error=nil;NSData *data=[NSData dataWithContentsOfURL:url options:NSDataReadingMappedIfSafe error:&error];
  BOOL isJSON=[[url.pathExtension lowercaseString] isEqualToString:@"json"];
@@ -690,6 +725,20 @@ static void front_amiibo_record_scan(void) {
    amiibo.first_write_month=amiibo.last_write_month=1;
    amiibo.first_write_day=amiibo.last_write_day=1;
    name=[[url.lastPathComponent stringByDeletingPathExtension] copy];
+   NSString *keyProblem=nil;NSData *key=front_amiibo_retail_key(url,&keyProblem);uint8_t plain[0x208];
+   if(!key)problem=keyProblem;
+   else if(!runtime_amiibo_decode(bytes,data.length,key.bytes,key.length,plain))
+    problem=@(TOTK_UI("Amiibo 数据校验失败；请确认密钥与转储文件匹配且文件未损坏","Amiibo authentication failed; confirm the retail key matches this dump and the file is intact"));
+   else{
+    amiibo.application_area_exists=(plain[0x2c]&0x20)!=0;
+    amiibo.application_area_id=((uint32_t)plain[0xb6]<<24)|((uint32_t)plain[0xb7]<<16)|((uint32_t)plain[0xb8]<<8)|plain[0xb9];
+    memcpy(amiibo.application_area,plain+0xdc,sizeof amiibo.application_area);
+    if(amiibo.game_character_id==0x0301&&amiibo.application_area_exists&&amiibo.application_area_id==0x1019c800){
+     uint8_t oldLevel=amiibo.application_area[0x11],hearts=amiibo.application_area[0x12];
+     amiibo.application_area[0x11]=40;
+     fprintf(stderr,"[botw] Wolf Link TPHD app data %s: level %u -> 40, hearts raw %u\n",url.lastPathComponent.UTF8String,oldLevel,hearts);
+    }
+   }
   }
  }
  if(!problem&&isJSON){
@@ -772,7 +821,7 @@ static void front_amiibo_next(void){
  NSError *error=nil;NSArray<NSURL *> *urls=front_amiibo_files(folder,&error);
  if(!urls){front_amiibo_toast([NSString stringWithFormat:@(TOTK_UI("无法读取 Amiibo 文件夹：%@","Cannot read Amiibo folder: %@")),error.localizedDescription]);return;}
  NSMutableArray<NSURL *> *files=[NSMutableArray array];
- for(NSURL *url in urls)if([@[@"bin",@"json"] containsObject:url.pathExtension.lowercaseString])[files addObject:url];
+ for(NSURL *url in urls)if(([url.pathExtension.lowercaseString isEqualToString:@"bin"]||[url.pathExtension.lowercaseString isEqualToString:@"json"])&&[url.lastPathComponent caseInsensitiveCompare:@"key_retail.bin"]!=NSOrderedSame)[files addObject:url];
  if(!files.count){front_amiibo_toast(@(TOTK_UI("Amiibo 文件夹中没有可扫描的文件","No Amiibo files in the folder")));return;}
  NSString *lastFolder=[defaults stringForKey:@"BOTWAmiiboSequenceFolder"],*last=[defaults stringForKey:@"BOTWAmiiboSequenceLast"];
  NSUInteger start=0;
@@ -821,9 +870,16 @@ static void front_amiibo_next(void){
  self.listScrollView.documentView=self.fileList;[self addSubview:self.listScrollView];
  NSButton *load=[NSButton buttonWithTitle:@(TOTK_UI("加载单个文件…","Load One File…")) target:self action:@selector(loadOneFile:)];
  load.frame=NSMakeRect(22,18,160,32);load.refusesFirstResponder=YES;[self addSubview:load];
+ NSButton *key=[NSButton buttonWithTitle:@(TOTK_UI("选择解密密钥…","Choose Key…")) target:self action:@selector(chooseKey:)];
+ key.frame=NSMakeRect(194,18,132,32);key.refusesFirstResponder=YES;[self addSubview:key];
+ self.keyLabel=[NSTextField labelWithString:@""];self.keyLabel.font=[NSFont systemFontOfSize:11];
+ self.keyLabel.textColor=[NSColor colorWithCalibratedWhite:0.78 alpha:1];self.keyLabel.lineBreakMode=NSLineBreakByTruncatingMiddle;
+ self.keyLabel.frame=NSMakeRect(338,20,w-360,28);[self addSubview:self.keyLabel];
  [self refreshFiles];return self;
 }
 -(void)refreshFiles{
+ NSString *keyPath=front_amiibo_key_path(nil);
+ self.keyLabel.stringValue=keyPath.length?[keyPath lastPathComponent]:@(TOTK_UI("原始 .bin 需要 key_retail.bin","Raw .bin files need key_retail.bin"));
  NSString *folder=[[NSUserDefaults standardUserDefaults] stringForKey:@"BOTWAmiiboFolder"];
  self.folderLabel.stringValue=folder.length?folder:@(TOTK_UI("尚未选择文件夹","No folder selected"));
  NSString *emptyMessage=nil;NSMutableArray<NSURL *> *files=[NSMutableArray array];
@@ -833,7 +889,7 @@ static void front_amiibo_next(void){
   if(!urls){fprintf(stderr,"[botw] cannot read Amiibo folder: %s\n",error.localizedDescription.UTF8String);emptyMessage=@(TOTK_UI("无法读取文件夹","Could not read folder"));}
   else for(NSURL *url in urls){
    NSString *extension=url.pathExtension.lowercaseString;
-   if([extension isEqualToString:@"bin"]||[extension isEqualToString:@"json"])[files addObject:url];
+   if(([extension isEqualToString:@"bin"]||[extension isEqualToString:@"json"])&&[url.lastPathComponent caseInsensitiveCompare:@"key_retail.bin"]!=NSOrderedSame)[files addObject:url];
   }
   if(urls&&!files.count)emptyMessage=@(TOTK_UI("文件夹中没有 .bin 或 .json 文件","No .bin or .json files in this folder"));
  }
@@ -868,6 +924,7 @@ static void front_amiibo_next(void){
  if(index>=0&&(NSUInteger)index<self.files.count)[amiiboMenuTarget scanAmiiboURL:self.files[(NSUInteger)index]];
 }
 -(void)chooseFolder:(id)sender{(void)sender;[amiiboMenuTarget chooseAmiiboFolder:nil];}
+-(void)chooseKey:(id)sender{(void)sender;[amiiboMenuTarget chooseAmiiboKey:nil];}
 -(void)loadOneFile:(id)sender{(void)sender;[amiiboMenuTarget chooseAmiibo:nil];}
 -(void)close:(id)sender{(void)sender;amiibo_panel_show(0);}
 -(void)center{if(self.superview)[self setFrameOrigin:NSMakePoint(floor((self.superview.bounds.size.width-self.frame.size.width)/2),floor((self.superview.bounds.size.height-self.frame.size.height)/2))];}
